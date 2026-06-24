@@ -12,7 +12,13 @@ import { formatAutoSyncAgo } from "@/lib/autoSyncState";
 
 export const maxDuration = 300;
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const isCron = verifyCronSecret(req);
+  if (!isCron) {
+    const user = await getCurrentUser();
+    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const status = await getAutoSyncStatus();
   return NextResponse.json({
     ...status,

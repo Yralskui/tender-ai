@@ -2,12 +2,16 @@ import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { REAL_EIS_TENDER_WHERE } from "@/lib/tenderQuery";
+import { getAccessStatus } from "@/lib/subscription";
 import Sidebar from "@/components/Sidebar";
 import { TrendingUp, Lock, CheckCircle, ArrowRight } from "lucide-react";
 
 export default async function GrowthPage() {
   const user = await getCurrentUser();
   if (!user) redirect("/auth/login");
+
+  const access = getAccessStatus(user);
+  if (!access.hasAccess) redirect("/paywall");
 
   const totalTenders = await prisma.tender.count({ where: REAL_EIS_TENDER_WHERE });
 

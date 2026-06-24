@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifyToken } from "@/lib/auth-edge";
 
-const PUBLIC_PATHS = ["/", "/auth/login", "/auth/register", "/api/auth/login", "/api/auth/register", "/api/tenders/sync", "/api/cron/sync", "/api/cron/notifications"];
-const PAYWALL_EXEMPT = ["/paywall", "/api/auth/logout", "/api/payment/activate", "/api/tenders/sync", "/uploads"];
+const PUBLIC_PATHS = ["/", "/auth/login", "/auth/register", "/api/auth/login", "/api/auth/register", "/api/cron/sync", "/api/cron/notifications"];
+const PAYWALL_EXEMPT = ["/paywall", "/api/auth/logout", "/api/payment/activate", "/uploads"];
 
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;

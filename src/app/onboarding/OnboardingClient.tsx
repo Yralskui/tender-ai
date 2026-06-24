@@ -5,6 +5,7 @@ import Link from "next/link";
 import {
   Building2, FileText, CheckCircle, ArrowRight, Zap, Upload, Tag, Info
 } from "lucide-react";
+import { COMPANY_REGIONS } from "@/lib/regions";
 
 const STEPS = [
   { id: "profile", icon: Building2, title: "Профиль поставщика", desc: "Опишите номенклатуру и регион работы" },
@@ -263,14 +264,19 @@ export default function OnboardingClient({ profileDone, docCount, companyName }:
 
             <div className="grid grid-cols-1 gap-3 mb-6">
               <div>
-                <label className="block text-xs text-slate-600 mb-1">Регион (необязательно)</label>
-                <input
+                <label className="block text-xs text-slate-600 mb-1">Регион работы (необязательно)</label>
+                <select
                   value={region}
                   onChange={(e) => setRegion(e.target.value)}
-                  placeholder="Москва"
-                  className="w-full px-3 py-2.5 rounded-xl app-input w-full px-4 py-3 rounded-xl text-sm transition-colors"
-                  
-                />
+                  className="w-full px-3 py-2.5 rounded-xl app-input text-sm transition-colors"
+                >
+                  <option value="">Все регионы</option>
+                  {COMPANY_REGIONS.map((r) => (
+                    <option key={r} value={r}>
+                      {r}
+                    </option>
+                  ))}
+                </select>
               </div>
             </div>
 

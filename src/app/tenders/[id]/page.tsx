@@ -1,5 +1,6 @@
 import { redirect, notFound } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth";
+import { getAccessStatus } from "@/lib/subscription";
 import { prisma } from "@/lib/prisma";
 import Sidebar from "@/components/Sidebar";
 import Link from "next/link";
@@ -66,6 +67,9 @@ export default async function TenderPage({
   const user = await getCurrentUser();
   perf.step("getCurrentUser");
   if (!user) redirect("/auth/login");
+
+  const access = getAccessStatus(user);
+  if (!access.hasAccess) redirect("/paywall");
 
   const tender = await prisma.tender.findUnique({ where: { id } });
   perf.step("tender.findUnique");

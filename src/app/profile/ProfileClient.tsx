@@ -1,14 +1,9 @@
 "use client";
-import { useState } from "react";
+import { useState, useMemo } from "react";
+import { useRouter } from "next/navigation";
 import { Building2, Save, Loader2, CheckCircle, MapPin, DollarSign, FileText, Tag, Palette } from "lucide-react";
 import ThemeToggle from "@/components/ThemeToggle";
-
-const REGIONS = [
-  "Москва", "Санкт-Петербург", "Московская область", "Краснодарский край",
-  "Свердловская область", "Республика Татарстан", "Новосибирская область",
-  "Нижегородская область", "Ростовская область", "Самарская область",
-  "Красноярский край", "Челябинская область", "Другой регион",
-];
+import { regionOptionsForSelect } from "@/lib/regions";
 
 const OKVED_OPTIONS = [
   { code: "26.20", label: "Производство компьютеров и оборудования" },
@@ -44,7 +39,12 @@ interface Props {
 }
 
 export default function ProfileClient({ user }: Props) {
+  const router = useRouter();
   const company = user.company;
+  const regionOptions = useMemo(
+    () => regionOptionsForSelect(company?.region),
+    [company?.region]
+  );
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
@@ -82,8 +82,16 @@ export default function ProfileClient({ user }: Props) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(form),
       });
-      if (!res.ok) { const d = await res.json(); setError(d.error); return; }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(data.error || "Ошибка сохранения");
+        return;
+      }
+      if (data.company?.region !== undefined) {
+        setForm((f) => ({ ...f, region: data.company.region || "" }));
+      }
       setSaved(true);
+      router.refresh();
       setTimeout(() => setSaved(false), 3000);
     } catch {
       setError("Ошибка сохранения");
@@ -182,11 +190,17 @@ export default function ProfileClient({ user }: Props) {
                 value={form.region}
                 onChange={(e) => setForm({ ...form, region: e.target.value })}
                 className="w-full px-4 py-3 rounded-xl app-input w-full px-4 py-3 rounded-xl text-sm transition-colors"
-                
               >
-                <option value="">Выберите регион</option>
-                {REGIONS.map((r) => <option key={r} value={r}>{r}</option>)}
+                <option value="">Все регионы</option>
+                {regionOptions.map((r) => (
+                  <option key={r} value={r}>
+                    {r}
+                  </option>
+                ))}
               </select>
+              <p className="text-xs text-slate-500 mt-1">
+                «Все регионы» — работаете по всей России. Конкретный регион учитывается в прогнозе и уведомлениях.
+              </p>
             </div>
             <div>
               <label className="block text-sm text-slate-600 mb-1.5">

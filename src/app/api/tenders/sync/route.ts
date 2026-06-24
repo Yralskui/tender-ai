@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireSyncAccess } from "@/lib/apiAuth";
 import { getCurrentUser } from "@/lib/auth";
 import { buildSyncFocusForCompany, runTenderSync, type SyncMode } from "@/lib/tenderSync";
 import { notifyUsersAfterSync } from "@/lib/notificationJobs";
@@ -56,6 +57,9 @@ async function executeSync(
 }
 
 export async function GET(req: NextRequest) {
+  const auth = await requireSyncAccess(req);
+  if ("error" in auth) return auth.error;
+
   const { searchParams } = new URL(req.url);
   const modeParam = searchParams.get("mode");
   const mode: SyncMode = modeParam === "catalog" ? "catalog" : "smart";
