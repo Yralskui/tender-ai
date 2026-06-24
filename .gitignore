@@ -39,3 +39,18 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+/src/generated/prisma
+
+# кэш скачанных ТЗ с zakupki (не коммитить)
+/data/
+
+# локальная SQLite и WAL
+dev.db
+dev.db-*
+
+# загруженные РУ / прайсы
+/public/uploads
+
+# отладочные дампы HTML
+tmp-eis*.html

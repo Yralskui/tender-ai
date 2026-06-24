@@ -1,0 +1,226 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  password      String
+  name          String?
+  trialEndsAt   DateTime
+  isPaid        Boolean   @default(false)
+  paidUntil     DateTime?
+  plan          String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  company       Company?
+  notifications Notification[]
+  notificationPreference NotificationPreference?
+}
+
+model Company {
+  id            String      @id @default(cuid())
+  name          String
+  inn           String      @unique
+  ogrn          String?
+  region        String?
+  revenue       Float?
+  description   String?
+  okvedCodes    String      @default("[]")
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  userId        String      @unique
+  user          User        @relation(fields: [userId], references: [id])
+  documents     Document[]
+  catalogProducts CatalogProduct[]
+  supplierPrices SupplierPriceItem[]
+  tenderMatches TenderMatch[]
+  tenderLabels  TenderLabel[]
+  labelAssignments TenderLabelAssignment[]
+}
+
+model Document {
+  id            String    @id @default(cuid())
+  name          String
+  type          String
+  fileUrl       String
+  expiresAt     DateTime?
+  extractedData String    @default("{}")
+  status        String    @default("pending")
+  createdAt     DateTime  @default(now())
+  companyId     String
+  company       Company   @relation(fields: [companyId], references: [id])
+  catalogProducts CatalogProduct[]
+  supplierPrices SupplierPriceItem[]
+}
+
+/** Позиция из приложения к РУ — размеры храним в мм для сверки с ТЗ */
+model CatalogProduct {
+  id           String   @id @default(cuid())
+  documentId   String
+  document     Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  companyId    String
+  company      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  position     Int      @default(0)
+  name         String
+  rawText      String
+  displayText  String
+  lengthMinMm  Int?
+  lengthMaxMm  Int?
+  widthMinMm   Int?
+  widthMaxMm   Int?
+  heightMinMm  Int?
+  heightMaxMm  Int?
+  unitSource   String   @default("cm")
+  quantityText String?
+  createdAt    DateTime @default(now())
+
+  @@index([companyId])
+  @@index([documentId])
+}
+
+/** Позиция нет-прайса поставщика */
+model SupplierPriceItem {
+  id               String   @id @default(cuid())
+  documentId       String
+  document         Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  companyId        String
+  company          Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  position         Int      @default(0)
+  name             String
+  displayName      String
+  vendor           String?
+  unit             String   @default("пара")
+  unitPrice        Float
+  unitPriceSterile Float?
+  priceBasis       String   @default("за единицу")
+  thicknessUm      Int?
+  densityGsm       Int?
+  sizeText         String?
+  colorText        String?
+  materialText     String?
+  packRatio        String?
+  elasticType      String?
+  categoryText     String?
+  createdAt        DateTime @default(now())
+
+  @@index([companyId])
+  @@index([documentId])
+}
+
+model Tender {
+  id              String        @id @default(cuid())
+  externalId      String        @unique
+  title           String
+  description     String?
+  customerName    String
+  region          String
+  price           Float
+  publishedAt     DateTime
+  deadline        DateTime
+  category        String
+  okvedCode       String?
+  requirements    String        @default("{}")
+  status          String        @default("active")
+  sourceUrl       String?
+  createdAt       DateTime      @default(now())
+  matches         TenderMatch[]
+  labelAssignments TenderLabelAssignment[]
+}
+
+/** Метка закупки (как в Контур.Закупки) — на уровне компании */
+model TenderLabel {
+  id          String   @id @default(cuid())
+  companyId   String
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  name        String
+  color       String   @default("#64748b")
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  assignments TenderLabelAssignment[]
+
+  @@unique([companyId, name])
+  @@index([companyId])
+}
+
+model TenderLabelAssignment {
+  id        String      @id @default(cuid())
+  companyId String
+  company   Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  tenderId  String
+  tender    Tender      @relation(fields: [tenderId], references: [id], onDelete: Cascade)
+  labelId   String
+  label     TenderLabel @relation(fields: [labelId], references: [id], onDelete: Cascade)
+  createdAt DateTime    @default(now())
+
+  @@unique([companyId, tenderId, labelId])
+  @@index([companyId, labelId])
+  @@index([tenderId])
+}
+
+model TenderMatch {
+  id              String    @id @default(cuid())
+  matchScore      Float
+  feedScore       Float     @default(0)
+  showInFeed      Boolean   @default(false)
+  showInProfile     Boolean   @default(false)
+  ruMatched       Int       @default(0)
+  ruPartial       Int       @default(0)
+  ruTotal         Int       @default(0)
+  forecastChance  Float     @default(0)
+  relevanceScore  Float     @default(0)
+  hideReason      String?
+  catalogHash     String?
+  computedAt      DateTime?
+  gaps            String    @default("[]")
+  strengths       String    @default("[]")
+  recommendation  String?
+  status          String    @default("new")
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  companyId       String
+  tenderId        String
+  company         Company   @relation(fields: [companyId], references: [id])
+  tender          Tender    @relation(fields: [tenderId], references: [id])
+
+  @@unique([companyId, tenderId])
+  @@index([companyId, showInFeed, feedScore])
+  @@index([companyId, showInProfile, relevanceScore])
+}
+
+model Notification {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type        String
+  title       String
+  body        String
+  tenderId    String?
+  documentId  String?
+  score       Float?
+  readAt      DateTime?
+  emailSentAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([userId, createdAt])
+  @@index([userId, readAt])
+  @@index([userId, type, tenderId])
+}
+
+model NotificationPreference {
+  userId           String   @id
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  emailEnabled     Boolean  @default(true)
+  notifyNewTenders Boolean  @default(true)
+  notifyHighMatch  Boolean  @default(true)
+  notifyDeadline   Boolean  @default(true)
+  notifyDocExpiry  Boolean  @default(true)
+  matchThreshold   Int      @default(70)
+  digestFrequency  String   @default("instant")
+  updatedAt        DateTime @updatedAt
+}

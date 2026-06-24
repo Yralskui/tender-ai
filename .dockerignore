@@ -1,0 +1,15 @@
+node_modules
+.next
+.git
+.gitignore
+.env
+.env.*
+dev.db
+dev.db-*
+data/tz-cache
+tmp-eis.html
+tmp-eis-row.html
+*.md
+!DEPLOY.md
+.cursor
+terminals
