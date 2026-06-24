@@ -1,0 +1,16 @@
+{
+  "running": false,
+  "intervalMs": 1200000,
+  "lastStartedAt": "2026-06-24T05:31:02.500Z",
+  "lastFinishedAt": "2026-06-24T05:31:53.082Z",
+  "lastMessage": "удалено 1 просроченных · очищено 1 кэш-папок ТЗ · +20 новых, 780 обновлено · в базе 6781",
+  "maintenance": {
+    "expiredTendersDeleted": 1,
+    "cacheDirsRemoved": 1
+  },
+  "sync": {
+    "created": 20,
+    "updated": 780,
+    "total": 6781
+  }
+}

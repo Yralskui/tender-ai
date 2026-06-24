@@ -30,30 +30,21 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
-.env
-.env.local
-.env.*.local
-!.env.example
+# env — в приватном репо для синхронизации между ноутами
+# (.env закоммичен намеренно; не делайте репозиторий публичным)
 
 # vercel
 .vercel
 
 # typescript
 *.tsbuildinfo
-next-env.d.ts
+next-env.local
 
+# generated on install
 /src/generated/prisma
 
-# кэш скачанных ТЗ с zakupki (не коммитить)
-/data/
-
-# локальная SQLite и WAL
-dev.db
-dev.db-*
-
-# загруженные РУ / прайсы
-/public/uploads
+# кэш ТЗ ~1+ GB — на другом ноуте подтянется заново при разборе документов
+/data/tz-cache/
 
 # отладочные дампы HTML
 tmp-eis*.html
