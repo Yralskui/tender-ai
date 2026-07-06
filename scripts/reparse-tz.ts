@@ -39,6 +39,7 @@ async function main() {
         ktruCodes: details.ktruCodes,
         tzParsedFromFile: details.tzParsedFromFile === true,
         tzProducts: details.tzProducts || [],
+        tzVolumes: details.tzVolumes || [],
         tzDocuments: (details.tzDocuments || []).map((d) => ({
           name: d.name,
           format: d.format,

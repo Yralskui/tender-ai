@@ -17,7 +17,7 @@ export type ProductFamily =
 const FAMILY_PATTERNS: Record<Exclude<ProductFamily, "unknown">, RegExp[]> = {
   medical_textile: [
     /бель/i, /бахил/i, /халат/i, /простын/i, /наволоч/i, /чехол/i, /неткан/i,
-    /полотен/i, /колпач/i, /шапоч/i, /берет/i, /шарлот/i, /одежд/i, /пеленк/i, /пелёнк/i,
+    /полотен/i, /шапоч/i, /берет/i, /шарлот/i, /одежд/i, /пеленк/i, /пелёнк/i,
     /маск/i, /салфетк/i, /простын/i, /покрывал/i,
   ],
   pharmaceutical: [
@@ -44,6 +44,7 @@ const FAMILY_PATTERNS: Record<Exclude<ProductFamily, "unknown">, RegExp[]> = {
   medical_consumable: [
     /шприц/i, /игл\w*/i, /перчат/i, /катетер/i, /бинт/i, /шовн/i, /лигатур/i,
     /мешк.*отход/i, /отходов\s+класса/i, /медицинских\s+отходов/i,
+    /коннектор/i, /крестообразн/i, /luer/i, /люер/i, /фитинг/i, /переходник/i, /адаптер/i,
   ],
   medical_lab_ivd: [
     /зонд/i, /пцр/i, /пцр-диагност/i, /микропробир/i, /пробирк/i,
@@ -103,15 +104,38 @@ const TEXTILE_SUB_PATTERNS: Record<TextileSubType, RegExp[]> = {
   gown: [/\bхалат/i, /\bсорочк/i, /хирургическ.*сорочк/i, /комбинезон/i, /костюм\s+хирург/i],
   glove: [/перчат/i, /манжет/i],
   shoe_cover: [/бахил/i],
-  cap: [/шапоч/i, /колпач/i, /берет/i, /шарлот/i],
+  cap: [/шапоч/i, /берет/i, /шарлот/i],
   sheet: [/простын/i, /пеленк/i, /пелёнк/i, /наволоч/i, /пододе/i],
-  linen_set: [/комплект\s+бель/i, /бель[её]\s+медицин/i, /постельн/i],
+  linen_set: [/комплект\s+бель/i, /набор\s+бель/i, /бель[её]\s+медицин/i, /бель[её]\s+для\s+(осмотр|хирург)/i, /постельн/i],
   wipe: [/салфет/i, /марл(?!ев)/i],
   roll: [/рулон/i],
   apron: [/фартук/i],
   kit: [/\bкомплект/i, /\bнабор/i],
   generic_textile: [/неткан/i, /спанбонд/i, /медтекстил/i],
 };
+
+/** Коннектор/фитинг — «колпачок» на соединении, не хирургическая шапочка */
+export function isMedicalConnectorLine(text: string): boolean {
+  const n = normalizeMatchText(text);
+  if (/коннектор|крестообразн|luer|люер|фитинг|адаптер|переходник|муфт/i.test(n)) return true;
+  if (/колпач/i.test(n) && /соединени|контур|пациент|male|female|\d+\s*мм|mm\b|luer|люер/i.test(n)) {
+    return true;
+  }
+  if (/к\s+пациенту|к\s+контуру|тип\s+female|тип\s+male/i.test(n)) return true;
+  return false;
+}
+
+/** Хирургическая шапочка/берет — текстиль, не деталь коннектора */
+export function isSurgicalCapLine(text: string): boolean {
+  if (isMedicalConnectorLine(text)) return false;
+  const n = normalizeMatchText(text);
+  if (/шапоч|берет|шарлот|колпак\s+хирург|головн|одноразов.*шап/i.test(n)) return true;
+  return (
+    /колпач/i.test(n) &&
+    /хирург|голов|шапоч|берет|нетканый|стерильн/i.test(n) &&
+    !/коннектор|соединени/i.test(n)
+  );
+}
 
 export function detectTextileSubTypes(text: string): Set<TextileSubType> {
   const normalized = normalizeMatchText(text);
@@ -123,6 +147,7 @@ export function detectTextileSubTypes(text: string): Set<TextileSubType> {
     if (type === "generic_textile") continue;
     if (patterns.some((re) => re.test(normalized))) found.add(type);
   }
+  if (isSurgicalCapLine(text)) found.add("cap");
   if (found.size === 0 && isTextileProduct(text)) found.add("generic_textile");
   return found;
 }
@@ -145,7 +170,38 @@ export function textileSubTypesCompatible(
 
   if (tenderTypes.has("kit") && catalogTypes.has("kit")) return true;
 
+  if (t.includes("linen_set") && c.includes("gown") && !c.includes("linen_set")) return false;
+  if (t.includes("gown") && c.includes("linen_set") && !t.includes("gown")) return false;
+
   return false;
+}
+
+export type SterilityPreference = "sterile" | "non_sterile" | "unknown";
+
+export function parseSterilityPreference(text: string): SterilityPreference {
+  const t = normalizeMatchText(text);
+  if (/нестерил/i.test(t)) return "non_sterile";
+  if (/стерил/i.test(t)) return "sterile";
+  return "unknown";
+}
+
+export function sterilityPreferencesConflict(a: string, b: string): boolean {
+  const sa = parseSterilityPreference(a);
+  const sb = parseSterilityPreference(b);
+  if (sa === "unknown" || sb === "unknown") return false;
+  return sa !== sb;
+}
+
+/** Набор/комплект белья — не халат и не простыня по отдельности */
+export function isMedicalLinenSetLine(text: string): boolean {
+  const n = normalizeMatchText(text);
+  return /набор\s+бель|комплект\s+бель|бель[её]\s+для\s+(осмотр|хирург)|бель[её]\s+медицин/i.test(n);
+}
+
+/** Хирургический костюм (рубашка + брюки) */
+export function isSurgicalSuitLine(text: string): boolean {
+  const n = normalizeMatchText(text);
+  return /рубашк.*брюк|брюк.*рубашк|состав\s+костюма/i.test(n);
 }
 
 
@@ -195,6 +251,7 @@ export function isLabIvdLine(text: string): boolean {
 }
 
 export function isTextileProduct(product: string): boolean {
+  if (isMedicalConnectorLine(product)) return false;
   const normalized = normalizeMatchText(product);
   return FAMILY_PATTERNS.medical_textile.some((re) => re.test(normalized));
 }
@@ -202,6 +259,8 @@ export function isTextileProduct(product: string): boolean {
 /** Одна позиция каталога — приоритет у типа изделия (бельё ≠ электрод, даже в названии «для ЭКС») */
 export function classifyProductFamily(product: string): ProductFamily {
   const normalized = normalizeMatchText(product);
+
+  if (isMedicalConnectorLine(product)) return "medical_consumable";
 
   if (FAMILY_PATTERNS.medical_trauma_ortho.some((re) => re.test(normalized))) {
     return "medical_trauma_ortho";

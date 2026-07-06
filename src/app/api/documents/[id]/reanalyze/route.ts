@@ -1,8 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
+import { readFile } from "fs/promises";
+import path from "path";
 import { getSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { analyzeDocument, aiProvider } from "@/lib/aiAnalysis";
+import { analyzeDocument, aiProvider, isPricelistFileName } from "@/lib/aiAnalysis";
 import { saveDocumentAnalysis } from "@/lib/documentAnalysisJob";
+import { backgroundJobsInNext } from "@/lib/runtimeConfig";
+import { enqueueDocumentAnalysisJob } from "@/lib/documentJobQueue";
+import { ingestPricelistDocument } from "@/lib/supplierPriceSync";
+import { scheduleCompanyFeedCacheRebuild } from "@/lib/tenderFeedCache";
 
 export const maxDuration = 300;
 
@@ -24,8 +30,52 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: "Документ не найден" }, { status: 404 });
   }
 
+  if (!backgroundJobsInNext()) {
+    await prisma.document.update({ where: { id }, data: { status: "pending" } });
+    await enqueueDocumentAnalysisJob({
+      documentId: id,
+      companyId: user.company.id,
+      enqueuedAt: new Date().toISOString(),
+    });
+    return NextResponse.json({
+      success: true,
+      queued: true,
+      message: "Разбор поставлен в очередь worker",
+    });
+  }
+
   try {
     await prisma.document.update({ where: { id }, data: { status: "pending" } });
+
+    const treatAsPricelist =
+      doc.type === "supplier_price" ||
+      (doc.type === "irrelevant" && isPricelistFileName(doc.name)) ||
+      (doc.type === "medical_ru" && isPricelistFileName(doc.name));
+
+    if (treatAsPricelist) {
+      const filePath = path.join(process.cwd(), "public", doc.fileUrl.replace(/^\//, ""));
+      const buffer = await readFile(filePath);
+      const { count, summary, warning } = await ingestPricelistDocument(
+        id,
+        user.company.id,
+        buffer,
+        doc.name
+      );
+      scheduleCompanyFeedCacheRebuild(user.company.id);
+      const updated = await prisma.document.findUnique({ where: { id } });
+      return NextResponse.json({
+        success: true,
+        isRelevant: count > 0,
+        warning,
+        aiProvider,
+        aiSummary: summary,
+        document: {
+          ...updated,
+          expiresAt: updated?.expiresAt?.toISOString() ?? null,
+          createdAt: updated?.createdAt?.toISOString() ?? null,
+        },
+      });
+    }
 
     const analysis = await analyzeDocument(
       doc.fileUrl,

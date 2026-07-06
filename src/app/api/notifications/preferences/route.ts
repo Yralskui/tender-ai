@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
-import { getOrCreatePreferences } from "@/lib/notificationService";
+import { getOrCreatePreferences, normalizeCoverageThreshold } from "@/lib/notificationService";
 import { prisma } from "@/lib/prisma";
 import type { DigestFrequency } from "@/lib/notificationService";
 
@@ -16,7 +16,9 @@ export async function GET() {
     notifyHighMatch: prefs.notifyHighMatch,
     notifyDeadline: prefs.notifyDeadline,
     notifyDocExpiry: prefs.notifyDocExpiry,
-    matchThreshold: prefs.matchThreshold,
+    matchThreshold: normalizeCoverageThreshold(prefs.matchThreshold),
+    notifyTitleKeywords: prefs.notifyTitleKeywords,
+    titleKeywords: prefs.titleKeywords,
     digestFrequency: prefs.digestFrequency as DigestFrequency,
   });
 }
@@ -33,12 +35,22 @@ export async function PATCH(req: NextRequest) {
     "notifyDeadline",
     "notifyDocExpiry",
     "matchThreshold",
+    "notifyTitleKeywords",
+    "titleKeywords",
     "digestFrequency",
   ] as const;
 
   const data: Record<string, unknown> = {};
   for (const key of allowed) {
     if (body[key] !== undefined) data[key] = body[key];
+  }
+
+  if (data.matchThreshold !== undefined) {
+    data.matchThreshold = normalizeCoverageThreshold(data.matchThreshold as number);
+  }
+
+  if (typeof data.titleKeywords === "string") {
+    data.titleKeywords = data.titleKeywords.trim().slice(0, 500);
   }
 
   if (data.digestFrequency && !["instant", "daily", "weekly"].includes(data.digestFrequency as string)) {

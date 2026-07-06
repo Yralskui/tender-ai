@@ -99,8 +99,12 @@ export default function TenderLabelsBar({
 
   if (labels.length === 0 && taggedTotal === 0) return null;
 
+  const activeLabel = activeTagId ? labels.find((l) => l.id === activeTagId) : undefined;
+  const sameAsAllTagged =
+    activeLabel && activeLabel.count > 0 && activeLabel.count === taggedTotal;
+
   return (
-    <div className="mt-2 space-y-2">
+    <div className={`mt-2 space-y-2 rounded-xl p-2 -mx-2 ${isTaggedView ? "bg-amber-50/80 border border-amber-100" : ""}`}>
       <div className="flex flex-wrap gap-1.5 items-center">
         <span className="text-[10px] text-slate-500 mr-0.5">Метки:</span>
         <Link
@@ -125,8 +129,8 @@ export default function TenderLabelsBar({
         </Link>
         {labels.map((label) => (
           <Link
-            key={label.id}
-            href={`/tenders?view=${feedMode === "tagged" ? "tagged" : feedMode}&tag=${label.id}`}
+          key={label.id}
+          href={`/tenders?view=tagged&tag=${label.id}`}
             className={`text-[11px] px-2 py-0.5 rounded-full border transition-colors inline-flex items-center gap-1 ${
               activeTagId === label.id
                 ? "text-white font-medium border-transparent"
@@ -157,6 +161,12 @@ export default function TenderLabelsBar({
           {manageOpen ? "Скрыть" : "Управление"}
         </button>
       </div>
+
+      {sameAsAllTagged && (
+        <p className="text-[10px] text-amber-800/90 leading-snug px-0.5">
+          На этих {taggedTotal} закупках стоят и другие метки — список совпадает с «С метками».
+        </p>
+      )}
 
       {manageOpen && (
         <div className="rounded-xl border border-slate-200 bg-white p-3 space-y-3 max-w-lg">

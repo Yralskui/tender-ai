@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import TenderFeedCard from "@/components/tender/TenderFeedCard";
-import type { TenderFeedCardItem } from "@/lib/tenderFeedPage";
+import type { TenderFeedCardItem } from "@/lib/tenderFeedTypes";
 import { Loader2 } from "lucide-react";
 
 interface Props {

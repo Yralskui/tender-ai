@@ -254,7 +254,12 @@ function assessNomenclatureCoverage(
     catalogMatchBlocked || familyBlocked
       ? 0
       : ruTotal > 0
-        ? Math.round(((ruMatched + ruPartial * 0.4) / ruTotal) * 100)
+        ? Math.min(
+            parsedReqs.tzParsedFromFile === true || (ruMatched === ruTotal && ruPartial === 0)
+              ? 100
+              : 40,
+            Math.round(((ruMatched + ruPartial * 0.4) / ruTotal) * 100)
+          )
         : 0;
 
   return {
@@ -334,6 +339,7 @@ export function computeTenderParticipation(
     {
       procurementKind: coverage.procurementKind,
       tzEnrichmentPending: coverage.tzEnrichmentPending,
+      tzParsedFromFile: parsedReqs.tzParsedFromFile === true,
       nomenclatureMismatch,
     }
   );

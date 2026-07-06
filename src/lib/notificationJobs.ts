@@ -4,15 +4,19 @@
 
 import { prisma } from "@/lib/prisma";
 import { buildCompanyFocus } from "@/lib/companyFocus";
-import { loadCompanyCatalogProducts, catalogRowsToStructured } from "@/lib/catalogProductSync";
+import { loadCompanyCatalogProducts, mergeCompanyCatalogSources } from "@/lib/catalogProductSync";
 import { mapCompanyDocuments } from "@/lib/matching";
+import { loadDocumentsForMatching } from "@/lib/documentQuery";
 import { rankTenderForFeed } from "@/lib/tenderRanking";
 import {
   getUsersWithAccess,
   notifyDeadline,
   notifyDocExpiry,
-  notifyNewTenderMatch,
+  notifyTenderAfterSync,
   sendPendingDigestEmails,
+  getOrCreatePreferences,
+  normalizeCoverageThreshold,
+  prefsToData,
 } from "@/lib/notificationService";
 import { upsertTenderMatchRank } from "@/lib/tenderFeedCache";
 
@@ -30,11 +34,12 @@ export async function notifyUsersAfterSync(createdTenderIds: string[]): Promise<
   for (const user of users) {
     if (!user.company) continue;
 
-    const documents = await prisma.document.findMany({ where: { companyId: user.company.id } });
+    const documents = await loadDocumentsForMatching(user.company.id);
     const docsForMatching = mapCompanyDocuments(documents);
     const catalogRows = await loadCompanyCatalogProducts(user.company.id);
-    const catalogProducts = catalogRows.map((r) => r.displayText || r.name);
-    const catalogStructured = catalogRowsToStructured(catalogRows);
+    const mergedCatalog = mergeCompanyCatalogSources({ catalogRows, docsForMatching });
+    const catalogProducts = mergedCatalog.catalogProducts;
+    const catalogStructured = mergedCatalog.catalogStructured;
     const focus = buildCompanyFocus({
       description: user.company.description,
       catalogProducts: docsForMatching
@@ -49,12 +54,10 @@ export async function notifyUsersAfterSync(createdTenderIds: string[]): Promise<
       description: user.company.description,
     };
 
-    const docsWithCatalog =
-      catalogStructured.length > 0 && docsForMatching.length > 0
-        ? docsForMatching.map((d, i) =>
-            i === 0 ? { ...d, catalogItems: catalogStructured } : d
-          )
-        : docsForMatching;
+    const docsWithCatalog = docsForMatching;
+
+    const prefs = await getOrCreatePreferences(user.id);
+    const coverageThreshold = normalizeCoverageThreshold(prefs.matchThreshold);
 
     for (const tender of tenders) {
       const rank = rankTenderForFeed(
@@ -66,21 +69,24 @@ export async function notifyUsersAfterSync(createdTenderIds: string[]): Promise<
         { light: true }
       );
 
-      if (!rank.showInFeed || rank.feedScore < 40) continue;
+      const keywordOnly =
+        prefs.notifyTitleKeywords && prefs.titleKeywords.trim().length > 0;
+      const profileCandidate = rank.showInFeed && rank.feedScore >= 40;
+      if (!profileCandidate && !keywordOnly) continue;
 
-      const prefs = await prisma.notificationPreference.findUnique({ where: { userId: user.id } });
-      const threshold = prefs?.matchThreshold ?? 70;
+      const needsFullRank =
+        profileCandidate &&
+        (prefs.notifyHighMatch || rank.feedScore >= coverageThreshold - 10);
+      const confirmedRank = needsFullRank
+        ? rankTenderForFeed(tender, focus, catalogProducts, docsWithCatalog, companyProfile, {
+            light: false,
+          })
+        : rank;
 
-      // Перед письмом «✅ Высокое совпадение» обязательно пересчитаем без light-режима:
-      // иначе можно получить ложные 100% на сыром/неразобранном ТЗ.
-      const confirmedRank =
-        rank.feedScore >= threshold
-          ? rankTenderForFeed(tender, focus, catalogProducts, docsWithCatalog, companyProfile, { light: false })
-          : rank;
+      if (!profileCandidate && !keywordOnly) continue;
+      if (profileCandidate && (!confirmedRank.showInFeed || confirmedRank.feedScore < 40)) continue;
 
-      if (!confirmedRank.showInFeed || confirmedRank.feedScore < 40) continue;
-
-      const n = await notifyNewTenderMatch({
+      const n = await notifyTenderAfterSync({
         userId: user.id,
         tenderId: tender.id,
         title: tender.title,
@@ -88,25 +94,29 @@ export async function notifyUsersAfterSync(createdTenderIds: string[]): Promise<
         price: tender.price,
         deadline: tender.deadline,
         feedScore: confirmedRank.feedScore,
-        matchThreshold: threshold,
+        forecastChance: confirmedRank.forecastChance,
+        showInFeed: confirmedRank.showInFeed,
+        prefs: prefsToData(prefs),
       });
 
       if (n) {
         notified++;
-        await upsertTenderMatchRank(prisma, user.company.id, tender.id, confirmedRank);
-        await prisma.tenderMatch.update({
-          where: {
-            companyId_tenderId: { companyId: user.company.id, tenderId: tender.id },
-          },
-          data: {
-            gaps: "[]",
-            strengths: JSON.stringify([confirmedRank.relevanceReason]),
-            recommendation: confirmedRank.hideReason
-              ? `Скрыт: ${confirmedRank.hideReason}`
-              : "Подходит по профилю",
-            status: "new",
-          },
-        });
+        if (profileCandidate) {
+          await upsertTenderMatchRank(prisma, user.company.id, tender.id, confirmedRank);
+          await prisma.tenderMatch.update({
+            where: {
+              companyId_tenderId: { companyId: user.company.id, tenderId: tender.id },
+            },
+            data: {
+              gaps: "[]",
+              strengths: JSON.stringify([confirmedRank.relevanceReason]),
+              recommendation: confirmedRank.hideReason
+                ? `Скрыт: ${confirmedRank.hideReason}`
+                : "Подходит по профилю",
+              status: "new",
+            },
+          });
+        }
       }
     }
   }
@@ -131,10 +141,10 @@ export async function scanDeadlineNotifications(): Promise<{ notified: number }>
   for (const user of users) {
     if (!user.company) continue;
 
-    const documents = await prisma.document.findMany({ where: { companyId: user.company.id } });
+    const documents = await loadDocumentsForMatching(user.company.id);
     const docsForMatching = mapCompanyDocuments(documents);
     const catalogRows = await loadCompanyCatalogProducts(user.company.id);
-    const catalogProducts = catalogRows.map((r) => r.displayText || r.name);
+    const catalogProducts = mergeCompanyCatalogSources({ catalogRows, docsForMatching }).catalogProducts;
     const focus = buildCompanyFocus({
       description: user.company.description,
       catalogProducts: docsForMatching

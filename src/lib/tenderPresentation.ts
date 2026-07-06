@@ -10,8 +10,20 @@ import {
   type ProcurementKind,
 } from "@/lib/tzSanitizer";
 import { normalizeDisplayText, TZ_POSITION_LINE_RE, TZ_POSITION_NUM_RE } from "@/lib/textNormalize";
+import { buildProcurementBundles, bundleStats } from "@/lib/tzProcurementBundles";
 
 export type { ProcurementKind };
+
+/** Числа для сообщений «N характеристик» — как в блоке наборов на карточке */
+export function summarizeTzDisplayCounts(
+  requirements: RequirementsLike,
+  tenderTitle?: string
+): { productCount: number; charCount: number } {
+  const stats = bundleStats(
+    buildProcurementBundles(requirements, tenderTitle, [], [])
+  );
+  return { productCount: stats.productCount, charCount: stats.charCount };
+}
 
 export interface ProcurementItem {
   id: string;
@@ -38,6 +50,8 @@ export interface ParticipationForecast {
   partialItems: number;
   missingItems: number;
   totalItems: number;
+  /** До разбора файла ТЗ с zakupki — оценка занижена/неточна */
+  preliminary?: boolean;
 }
 
 interface RequirementsLike {
@@ -162,12 +176,14 @@ export function computeParticipationForecast(
   options: {
     procurementKind?: ProcurementKind;
     tzEnrichmentPending?: boolean;
+    tzParsedFromFile?: boolean;
     nomenclatureMismatch?: boolean;
   } = {}
 ): ParticipationForecast {
   const {
     procurementKind = "unknown",
     tzEnrichmentPending = false,
+    tzParsedFromFile = false,
     nomenclatureMismatch = false,
   } = options;
 
@@ -270,8 +286,19 @@ export function computeParticipationForecast(
     detail = `Совпало ${matchedItems} из ${totalItems} позиций ТЗ${partialItems ? `, ещё ${partialItems} требуют проверки` : ""}${missingItems ? `, ${missingItems} отсутствуют в РУ` : ""}.`;
   }
 
+  const preliminary = !tzParsedFromFile && totalItems > 0 && !(matchedItems === totalItems && partialItems === 0);
+  let adjCoverage = coveragePercent;
+  let adjChance = chance;
+  if (preliminary) {
+    adjCoverage = Math.min(coveragePercent, 40);
+    adjChance = Math.min(chance, 35);
+    if (level === "high") level = "medium";
+    headline = "Предварительно — нужен разбор файла ТЗ";
+    detail = `По данным извещения ЕИС: ${detail} Точный процент — после разбора файла «Техническое задание».`;
+  }
+
   return {
-    chancePercent: chance,
+    chancePercent: adjChance,
     level,
     headline,
     detail,
@@ -279,7 +306,8 @@ export function computeParticipationForecast(
     partialItems,
     missingItems,
     totalItems,
-    coveragePercent,
+    coveragePercent: adjCoverage,
+    preliminary,
   };
 }
 

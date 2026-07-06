@@ -12,6 +12,8 @@ import { isGarbageCharacteristic } from "@/lib/tzSanitizer";
 import { inferProductsFromTzData } from "@/lib/tzNomenclature";
 import { parseNationalRegimeFromNoticeHtml, type StoredNationalRegime } from "@/lib/nationalRegime";
 import { parseEisKtruCatalogHtml, eisCatalogToDocumentParse } from "@/lib/eisKtruCatalogParser";
+import { applyResolvedTzNames } from "@/lib/tzProductLabelResolve";
+import { zakupkiFetch } from "@/lib/zakupkiQueue";
 
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
@@ -387,7 +389,7 @@ function normalizePlatformUrl(platform: string, url: string): string {
 }
 
 async function fetchHtml(url: string): Promise<string> {
-  const response = await fetch(url, {
+  const response = await zakupkiFetch(url, {
     headers: {
       "User-Agent": USER_AGENT,
       Accept: "text/html,application/xhtml+xml",
@@ -452,7 +454,10 @@ export async function fetchNoticeDetails(
   }
 
   const parseTz = options.parseTzFiles !== false;
-  if (!parseTz) return details;
+  if (!parseTz) {
+    applyResolvedTzNames(details);
+    return details;
+  }
 
   const tzEnrichOpts = {
     htmlProductSpecs: details.productSpecs,
@@ -477,6 +482,7 @@ export async function fetchNoticeDetails(
         details.tzParsedFromFile = true;
         details.tzProducts = cached.products;
         details.tzVolumes = cached.tzVolumes;
+        applyResolvedTzNames(details);
         return details;
       }
     }
@@ -513,6 +519,8 @@ export async function fetchNoticeDetails(
       console.error(`TZ cache fallback failed for ${regNumber}:`, cacheErr);
     }
   }
+
+  applyResolvedTzNames(details);
 
   return details;
 }

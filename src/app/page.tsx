@@ -1,4 +1,5 @@
 import Link from "next/link";
+import LandingPricing from "@/components/LandingPricing";
 import {
   CheckCircle,
   XCircle,
@@ -64,7 +65,7 @@ export default function Home() {
             Как это работает
           </a>
         </div>
-        <p className="text-sm text-slate-500 mt-4">Бесплатно 14 дней · Без карты · Отмена в любой момент</p>
+        <p className="text-sm text-slate-500 mt-4">Бесплатно 7 дней · Без карты · Отмена в любой момент</p>
 
         {/* Демо-блок */}
         <div className="mt-16 max-w-4xl mx-auto rounded-2xl border border-slate-200 overflow-hidden app-card">
@@ -121,31 +122,46 @@ export default function Home() {
           {[
             {
               step: "01",
-              icon: <FileSearch size={28} />,
+              icon: <FileSearch size={22} />,
               title: "Загрузите РУ с приложением",
               desc: "AI извлекает полный каталог изделий из регистрационного удостоверения — не один товар, а весь перечень.",
-              color: "#3b82f6",
+              accent: "#2563eb",
             },
             {
               step: "02",
-              icon: <Zap size={28} />,
+              icon: <Zap size={22} />,
               title: "Сверка с ТЗ тендеров",
               desc: "Система читает характеристики из извещений на zakupki.gov.ru и сопоставляет с вашим каталогом из РУ.",
-              color: "#10b981",
+              accent: "#059669",
             },
             {
               step: "03",
-              icon: <TrendingUp size={28} />,
+              icon: <TrendingUp size={22} />,
               title: "Точный ответ по каждому тендеру",
               desc: "Не «примерно подходите», а «эта позиция из ТЗ есть в вашем РУ, эта — нет» с процентом совпадения.",
-              color: "#8b5cf6",
+              accent: "#7c3aed",
             },
           ].map((item) => (
             <div key={item.step} className="rounded-2xl p-8 border border-slate-200 card-hover app-card">
-              <div className="w-12 h-12 rounded-xl flex items-center justify-center mb-6" style={{ background: `${item.color}20`, color: item.color }}>
+              <div className="flex items-center gap-3 mb-6">
+                <span
+                  className="text-sm font-semibold tabular-nums tracking-wide"
+                  style={{ color: item.accent }}
+                >
+                  {item.step}
+                </span>
+                <div className="h-px flex-1" style={{ background: `${item.accent}33` }} />
+              </div>
+              <div
+                className="w-11 h-11 rounded-lg border flex items-center justify-center mb-5"
+                style={{
+                  background: `${item.accent}0d`,
+                  borderColor: `${item.accent}22`,
+                  color: item.accent,
+                }}
+              >
                 {item.icon}
               </div>
-              <div className="text-6xl font-bold mb-4" style={{ color: `${item.color}30` }}>{item.step}</div>
               <h3 className="text-xl font-semibold text-slate-900 mb-3">{item.title}</h3>
               <p className="text-slate-600 leading-relaxed">{item.desc}</p>
             </div>
@@ -234,64 +250,11 @@ export default function Home() {
       <section id="pricing" className="max-w-7xl mx-auto px-6 py-24">
         <div className="text-center mb-16">
           <h2 className="text-4xl font-bold text-slate-900 mb-4">Простые тарифы</h2>
-          <p className="text-slate-600 text-lg">Один выигранный тендер окупает годовую подписку в 50 раз</p>
+          <p className="text-slate-600 text-lg">
+            От 990 ₽/мес · год со скидкой 5% · промокоды от поддержки
+          </p>
         </div>
-        <div className="grid md:grid-cols-3 gap-8 max-w-5xl mx-auto">
-          {[
-            {
-              name: "Старт",
-              price: "4 900",
-              period: "мес",
-              desc: "Для малого бизнеса",
-              features: ["До 3 регионов", "Анализ документов до 20 шт", "Email уведомления", "Базовый анализ тендеров"],
-              cta: "Начать",
-              highlight: false,
-            },
-            {
-              name: "Профи",
-              price: "9 900",
-              period: "мес",
-              desc: "Для активных участников",
-              features: ["Все регионы России", "Неограниченные документы", "Telegram уведомления", "Детальный gap-анализ", "Карта роста компании", "Автозаполнение заявок"],
-              cta: "Начать 14 дней бесплатно",
-              highlight: true,
-            },
-            {
-              name: "Команда",
-              price: "19 900",
-              period: "мес",
-              desc: "Для компаний с командой",
-              features: ["Всё из Профи", "До 5 пользователей", "API доступ", "Приоритетная поддержка", "Личный менеджер"],
-              cta: "Связаться",
-              highlight: false,
-            },
-          ].map((plan) => (
-            <div key={plan.name} className={`rounded-2xl p-8 border card-hover app-card ${plan.highlight ? "border-emerald-400 relative bg-gradient-to-br from-emerald-50 to-blue-50" : "border-slate-200"}`} >
-              {plan.highlight && (
-                <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-4 py-1 rounded-full text-xs font-bold text-slate-900 btn-primary">
-                  Популярный
-                </div>
-              )}
-              <h3 className="text-lg font-semibold text-slate-900 mb-1">{plan.name}</h3>
-              <p className="text-slate-600 text-sm mb-4">{plan.desc}</p>
-              <div className="flex items-baseline gap-1 mb-6">
-                <span className="text-4xl font-bold text-slate-900">{plan.price} ₽</span>
-                <span className="text-slate-600">/{plan.period}</span>
-              </div>
-              <ul className="space-y-3 mb-8">
-                {plan.features.map((f) => (
-                  <li key={f} className="flex items-center gap-2 text-sm text-slate-700">
-                    <CheckCircle size={16} className="text-emerald-600 shrink-0" />
-                    {f}
-                  </li>
-                ))}
-              </ul>
-              <Link href="/auth/register" className={`block text-center py-3 rounded-xl font-medium transition-all text-sm ${plan.highlight ? "text-white hover:opacity-90" : "border border-slate-300 text-slate-700 hover:border-slate-400 hover:bg-slate-50"}`} style={plan.highlight ? { background: "linear-gradient(135deg, #3b82f6, #10b981)" } : {}}>
-                {plan.cta}
-              </Link>
-            </div>
-          ))}
-        </div>
+        <LandingPricing />
       </section>
 
       {/* CTA */}
@@ -302,7 +265,7 @@ export default function Home() {
             Загрузите РУ с приложением — через 5 минут увидите медтендеры, где ваш каталог совпадает с ТЗ заказчика
           </p>
           <Link href="/auth/register" className="inline-flex items-center gap-2 px-10 py-4 rounded-xl font-medium text-white text-lg transition-all hover:opacity-90 animate-pulse-glow btn-primary">
-            Начать бесплатно — 14 дней
+            Начать бесплатно — 7 дней
             <ArrowRight size={20} />
           </Link>
         </div>

@@ -13,6 +13,7 @@ import {
   titleConflictsWithTzProducts,
 } from "@/lib/tzSanitizer";
 import { isKtruCode, TZ_POSITION_LINE_RE, TZ_POSITION_NUM_RE } from "@/lib/textNormalize";
+import { extractSingleProductFromTenderTitle } from "@/lib/tzProductLabelResolve";
 
 export { isCharacteristicFieldName };
 
@@ -56,6 +57,10 @@ const PRODUCT_INFERENCE: Array<{ patterns: RegExp[]; name: string }> = [
   {
     patterns: [/шапочк/i, /колпак\s+хирург/i],
     name: "Шапочка хирургическая одноразовая",
+  },
+  {
+    patterns: [/фартук/i],
+    name: "Фартук гигиенический, одноразового использования",
   },
   {
     patterns: [/чехол\s+хирург|чехол\s+неткан|чехол\s+прозрач/i, /материал\s+чехла/i],
@@ -102,6 +107,9 @@ function blobFromRequirements(input: {
 }
 
 function extractPrimaryProductFromTitle(title: string): string | null {
+  const equipment = extractSingleProductFromTenderTitle(title);
+  if (equipment) return equipment;
+
   const clean = title.replace(/^поставка\s+/i, "").trim();
 
   const parens = clean.match(/\(([^)]+)\)/);

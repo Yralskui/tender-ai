@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import type { ParsedSupplierPriceItem } from "@/lib/pricelistParser";
+import { parsePricelistPdfBuffer } from "@/lib/pricelistParser";
 
 export interface SupplierPriceRow {
   id: string;
@@ -167,4 +168,31 @@ export async function saveSupplierPriceDocument(
   });
 
   return { count };
+}
+
+export function resolvePricelistVendor(displayName: string): string | undefined {
+  if (/инмедиз/i.test(displayName)) return "Инмедиз";
+  if (/спец\.?\s*цена/i.test(displayName)) return "Поставщик (спец.цена)";
+  return undefined;
+}
+
+export async function ingestPricelistDocument(
+  documentId: string,
+  companyId: string,
+  buffer: Buffer,
+  displayName: string
+): Promise<{ count: number; summary: string; warning: string | null }> {
+  const items = await parsePricelistPdfBuffer(buffer, { fileName: displayName });
+  const vendor = resolvePricelistVendor(displayName);
+  const dateM = displayName.match(/(\d{2}[.\-]\d{2}[.\-]\d{2,4})/);
+  const { count } = await saveSupplierPriceDocument(documentId, companyId, items, {
+    vendor,
+    validFrom: dateM?.[1],
+    fileName: displayName,
+  });
+  return {
+    count,
+    summary: count > 0 ? `Разобрано ${count} позиций из прайс-листа` : "Не удалось извлечь позиции из PDF",
+    warning: count === 0 ? "Проверьте формат файла или загрузите более чёткий PDF" : null,
+  };
 }

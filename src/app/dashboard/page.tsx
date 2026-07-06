@@ -1,23 +1,19 @@
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
 import { getAccessStatus } from "@/lib/subscription";
 import { mapCompanyDocuments } from "@/lib/matching";
-import { filterTendersForVertical } from "@/lib/productVertical";
-import { buildCompanyFocus } from "@/lib/companyFocus";
-import { fetchTendersForFeed, countActiveEisTenders, TENDER_RANK_POOL } from "@/lib/tenderQuery";
-import { rankAndFilterTendersForFeed } from "@/lib/tenderRanking";
+import { loadDocumentsForMatching, countRelevantDocuments } from "@/lib/documentQuery";
 import Sidebar from "@/components/Sidebar";
 import TrialBanner from "@/components/TrialBanner";
 import TendersSyncButton from "@/components/TendersSyncButton";
+import { loadTenderFeedPage } from "@/lib/tenderFeedPage";
+import { createPerfTimer } from "@/lib/perfLog";
 import Link from "next/link";
 import {
   FileText,
   Search,
   TrendingUp,
   CheckCircle,
-  AlertCircle,
-  XCircle,
   Clock,
   ArrowRight,
   Plus,
@@ -29,67 +25,61 @@ function formatPrice(price: number) {
   return `${price} ₽`;
 }
 
-function daysUntil(date: Date) {
+function daysUntil(date: Date | string) {
   return Math.ceil((new Date(date).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
 }
 
 export default async function DashboardPage() {
+  const perf = createPerfTimer("GET /dashboard");
   const user = await getCurrentUser();
+  perf.step("getCurrentUser");
   if (!user) redirect("/auth/login");
 
   const access = getAccessStatus(user);
   if (!access.hasAccess) redirect("/paywall");
 
   let okvedCodes: string[] = [];
-  try { okvedCodes = JSON.parse(user.company?.okvedCodes || "[]"); } catch {}
+  try {
+    okvedCodes = JSON.parse(user.company?.okvedCodes || "[]");
+  } catch {}
 
-  const [activeTenders, totalInDb, documents] = await Promise.all([
-    fetchTendersForFeed(prisma, TENDER_RANK_POOL.dashboard),
-    countActiveEisTenders(prisma),
-    user.company
-      ? prisma.document.findMany({ where: { companyId: user.company.id } })
-      : Promise.resolve([]),
-  ]);
+  const documents = user.company ? await loadDocumentsForMatching(user.company.id) : [];
+  perf.step("documents", { count: documents.length });
 
-  const docCount = documents.length;
-  const relevantDocCount = documents.filter((d) => {
-    try { return JSON.parse(d.extractedData || "{}").isRelevant === true; } catch { return false; }
-  }).length;
-
-  const docsForMatching = mapCompanyDocuments(documents);
-  const catalogProducts = docsForMatching
-    .filter((d) => d.isRelevant && d.products?.length)
-    .flatMap((d) => d.products || []);
-
-  const companyFocus = buildCompanyFocus({
-    description: user.company?.description ?? null,
-    catalogProducts,
+  const feedPage = await loadTenderFeedPage({
+    okvedCodes,
+    documents,
+    company: user.company
+      ? {
+          id: user.company.id,
+          revenue: user.company.revenue,
+          region: user.company.region,
+          description: user.company.description,
+        }
+      : null,
+    feedMode: "matched",
+    limit: 5,
+  });
+  perf.step("feedPage", {
+    items: feedPage.items.length,
+    cacheBuilding: feedPage.cacheBuilding ?? false,
+    totalInDb: feedPage.totalInDb,
   });
 
-  const companyProfile = {
-    okvedCodes,
-    revenue: user.company?.revenue ?? null,
-    region: user.company?.region ?? null,
-    description: user.company?.description ?? null,
-  };
+  const docCount = documents.length;
+  const relevantDocCount = countRelevantDocuments(documents);
 
-  const verticalTenders = filterTendersForVertical(activeTenders, okvedCodes);
-  const { tenders: profileTenders } = rankAndFilterTendersForFeed(
-    verticalTenders,
-    companyFocus,
-    documents,
-    companyProfile,
-    { light: true }
-  );
-  const recentTenders = profileTenders.slice(0, 5);
-  const medicalTenderCount = profileTenders.length;
-  const rankPoolNote = totalInDb > TENDER_RANK_POOL.dashboard;
+  const recentTenders = feedPage.items;
+  const medicalTenderCount = feedPage.cacheMatchedCount ?? feedPage.statsShown;
+  const totalInDb = feedPage.totalInDb;
 
   let matchingCount = 0;
   const tendersWithScores = recentTenders.map((tender) => {
-    if (relevantDocCount === 0) return { tender, score: null as number | null };
-    if (tender.forecastChance >= 45 || (tender.ruMatched ?? 0) > 0) matchingCount++;
-    return { tender, score: tender.forecastChance ?? tender.matchScore };
+    const score = tender.displayScore;
+    if (relevantDocCount > 0 && score != null && (score >= 45 || tender.ruMatched > 0)) {
+      matchingCount++;
+    }
+    return { tender, score };
   });
 
   const nearestDeadline = recentTenders.reduce((min, t) => {
@@ -98,28 +88,72 @@ export default async function DashboardPage() {
   }, null as number | null);
 
   const stats = [
-    { label: "По профилю", value: medicalTenderCount, hint: rankPoolNote ? `из ${TENDER_RANK_POOL.dashboard} новых` : "в вашей ленте", icon: Search, color: "text-blue-600", bg: "bg-blue-50" },
-    { label: "Документов AI", value: relevantDocCount, hint: `из ${docCount} загруженных`, icon: FileText, color: "text-emerald-600", bg: "bg-emerald-50" },
-    { label: "Подходят ≥45%", value: relevantDocCount > 0 ? matchingCount : "—", hint: "с совпадением в РУ", icon: CheckCircle, color: "text-violet-600", bg: "bg-violet-50" },
-    { label: "Дедлайн", value: nearestDeadline !== null ? `${nearestDeadline} дн` : "—", hint: "ближайший", icon: Clock, color: "text-amber-600", bg: "bg-amber-50" },
+    {
+      label: "По профилю",
+      value: medicalTenderCount,
+      hint: feedPage.cacheBuilding ? "строится кэш…" : "в вашей ленте",
+      icon: Search,
+      color: "text-blue-600",
+      bg: "bg-blue-50",
+    },
+    {
+      label: "Документов AI",
+      value: relevantDocCount,
+      hint: `из ${docCount} загруженных`,
+      icon: FileText,
+      color: "text-emerald-600",
+      bg: "bg-emerald-50",
+    },
+    {
+      label: "Подходят ≥45%",
+      value: relevantDocCount > 0 ? matchingCount : "—",
+      hint: "с совпадением в РУ",
+      icon: CheckCircle,
+      color: "text-violet-600",
+      bg: "bg-violet-50",
+    },
+    {
+      label: "Дедлайн",
+      value: nearestDeadline !== null ? `${nearestDeadline} дн` : "—",
+      hint: "ближайший",
+      icon: Clock,
+      color: "text-amber-600",
+      bg: "bg-amber-50",
+    },
   ];
+
+  perf.end("рендер", { tenders: recentTenders.length, totalInDb });
 
   return (
     <div className="flex min-h-screen bg-[#eef1f6]">
       <Sidebar />
       <main className="app-main min-w-0 p-4 lg:p-6">
-        <header className="mb-6">
-          <h1 className="text-2xl font-semibold text-slate-900">
-            {user.name || user.email.split("@")[0]}
-          </h1>
-          <p className="text-sm text-slate-500 mt-1">
-            {user.company?.name || "Заполните профиль"}
-            <span className="mx-1.5">·</span>
-            <span className="text-emerald-600 font-medium">Поставщик медизделий</span>
-          </p>
+        <header className="mb-6 flex items-start justify-between gap-4 pr-14 lg:pr-16">
+          <div>
+            <h1 className="text-2xl font-semibold text-slate-900">
+              {user.name || user.email.split("@")[0]}
+            </h1>
+            <p className="text-sm text-slate-500 mt-1">
+              {user.company?.name || "Заполните профиль"}
+              <span className="mx-1.5">·</span>
+              <span className="text-emerald-600 font-medium">Поставщик медизделий</span>
+              {totalInDb > 0 && (
+                <span className="text-slate-400">
+                  <span className="mx-1.5">·</span>
+                  {totalInDb} закупок в базе
+                </span>
+              )}
+            </p>
+          </div>
         </header>
 
         <TrialBanner daysLeft={access.trialDaysLeft} type={access.type === "trial" ? "trial" : "paid"} plan={access.plan} />
+
+        {feedPage.cacheBuilding && (
+          <div className="mb-6 app-card p-4 border border-amber-200 bg-amber-50/60 text-sm text-amber-900">
+            Подбираем подходящие закупки по вашему РУ — список обновится через минуту.
+          </div>
+        )}
 
         {docCount === 0 && (
           <div className="mb-6 app-card p-5 border border-blue-100 bg-gradient-to-r from-blue-50/80 to-emerald-50/50">
@@ -129,12 +163,12 @@ export default async function DashboardPage() {
               </div>
               <div className="flex-1">
                 <h3 className="font-semibold text-slate-900 mb-1">Загрузите РУ с приложением</h3>
-            <p className="text-sm text-slate-600 mb-3">
-              AI извлечёт каталог изделий и сверит с ТЗ медтендеров с zakupki.gov.ru
-            </p>
-            <p className="text-xs text-slate-500 mb-3">
-              После загрузки РУ нажмите «Подобрать закупки» на странице тендеров — система сама разберёт ТЗ у лучших закупок.
-            </p>
+                <p className="text-sm text-slate-600 mb-3">
+                  AI извлечёт каталог изделий и сверит с ТЗ медтендеров с zakupki.gov.ru
+                </p>
+                <p className="text-xs text-slate-500 mb-3">
+                  После загрузки РУ нажмите «Подобрать закупки» на странице тендеров — система сама разберёт ТЗ у лучших закупок.
+                </p>
                 <Link href="/documents" className="btn-primary px-4 py-2 text-sm">
                   <Plus size={16} />
                   Загрузить документы
@@ -170,7 +204,9 @@ export default async function DashboardPage() {
             <div className="space-y-2">
               {tendersWithScores.length === 0 ? (
                 <div className="app-card p-8 text-center text-slate-500 text-sm">
-                  Нет тендеров — нажмите «Загрузить с zakupki.gov.ru» справа
+                  {feedPage.cacheBuilding
+                    ? "Строим список подходящих закупок…"
+                    : "Нет тендеров — нажмите «Загрузить с zakupki.gov.ru» справа"}
                 </div>
               ) : (
                 tendersWithScores.map(({ tender, score }) => {
@@ -195,8 +231,10 @@ export default async function DashboardPage() {
                         <div className="text-right shrink-0 space-y-1">
                           <div className="text-sm font-semibold text-slate-900">{formatPrice(tender.price)}</div>
                           {score !== null ? (
-                            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold ${scoreStatus === "green" ? "score-green" : scoreStatus === "yellow" ? "score-yellow" : "score-red"}`}>
-                              {score}%
+                            <span
+                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-semibold ${scoreStatus === "green" ? "score-green" : scoreStatus === "yellow" ? "score-yellow" : "score-red"}`}
+                            >
+                              {Math.round(score)}%
                             </span>
                           ) : (
                             <span className="text-xs text-slate-400">—</span>

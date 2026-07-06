@@ -8,10 +8,13 @@ import {
   analyzeDocumentFallback,
   isAIEnabled,
   aiProvider,
+  probePdfTextLength,
+  shouldRunFullDocumentAnalysis,
+  isPricelistFileName,
 } from "@/lib/aiAnalysis";
 import { saveDocumentAnalysis } from "@/lib/documentAnalysisJob";
-import { parsePricelistPdfBuffer } from "@/lib/pricelistParser";
-import { saveSupplierPriceDocument } from "@/lib/supplierPriceSync";
+import { ingestPricelistDocument } from "@/lib/supplierPriceSync";
+import { scheduleCompanyFeedCacheRebuild } from "@/lib/tenderFeedCache";
 import { writeFile, mkdir } from "fs/promises";
 import path from "path";
 
@@ -62,6 +65,8 @@ export async function POST(req: NextRequest) {
     if (!file) return NextResponse.json({ error: "Файл не выбран" }, { status: 400 });
 
     const displayName = originalName.trim() || file.name;
+    const effectiveDocType =
+      docType !== "supplier_price" && isPricelistFileName(displayName) ? "supplier_price" : docType;
 
     const maxSize = 20 * 1024 * 1024;
     if (file.size > maxSize) {
@@ -98,7 +103,7 @@ export async function POST(req: NextRequest) {
     const document = await prisma.document.create({
       data: {
         name: displayName,
-        type: docType,
+        type: effectiveDocType,
         fileUrl,
         expiresAt,
         status: "pending",
@@ -110,49 +115,55 @@ export async function POST(req: NextRequest) {
     let aiSummary: string | null = null;
     let isRelevant = false;
     let analysisPending = false;
+    const typeAutoNote =
+      effectiveDocType !== docType
+        ? "Файл похож на прайс-лист — разобран как цены поставщика, не как РУ."
+        : null;
 
-    if (docType === "supplier_price") {
-      const items = await parsePricelistPdfBuffer(buffer, { fileName: displayName });
-      const vendor = /инмедиз/i.test(displayName)
-        ? "Инмедиз"
-        : /спец\.?\s*цена/i.test(displayName)
-          ? "Поставщик (спец.цена)"
-          : undefined;
-      const dateM = displayName.match(/(\d{2}[.\-]\d{2}[.\-]\d{2,4})/);
-      const { count } = await saveSupplierPriceDocument(document.id, user.company.id, items, {
-        vendor,
-        validFrom: dateM?.[1],
-        fileName: displayName,
-      });
+    if (effectiveDocType === "supplier_price") {
+      const { count, summary, warning } = await ingestPricelistDocument(
+        document.id,
+        user.company.id,
+        buffer,
+        displayName
+      );
       isRelevant = count > 0;
-      aiSummary = count > 0 ? `Разобрано ${count} позиций из прайс-листа` : "Не удалось извлечь позиции из PDF";
-      aiWarning = count === 0 ? "Проверьте формат файла или загрузите Excel/более чёткий PDF" : null;
+      aiSummary = summary;
+      aiWarning = warning;
+      scheduleCompanyFeedCacheRebuild(user.company.id);
     } else try {
       // 1) Быстрый разбор (текст + имя файла) — обычно 5–30 сек
-      let analysis = await analyzeDocument(fileUrl, displayName, docType, { mode: "quick" });
+      let analysis = await analyzeDocument(fileUrl, displayName, effectiveDocType, { mode: "quick" });
+      const pdfTextLength = ext === "pdf" ? await probePdfTextLength(fileUrl) : null;
 
-      const wantsFullCatalog =
-        analysis.isRelevantForTenders &&
-        analysis.docType === "medical_ru" &&
-        (analysis.catalogItems?.length ?? 0) <= 1 &&
-        ext === "pdf";
+      const needsFull = shouldRunFullDocumentAnalysis(analysis, {
+        ext,
+        userDocType: effectiveDocType,
+        pdfTextLength,
+      });
 
-      // 2) Полный разбор со сканами — только если есть смысл и не блокируем ответ надолго
-      if (!analysis.isRelevantForTenders || wantsFullCatalog) {
+      // 2) Полный разбор со сканами — для РУ/сертификатов и «тонкого» каталога
+      if (needsFull) {
         const full = await Promise.race([
-          analyzeDocument(fileUrl, displayName, docType, { mode: "full" }),
+          analyzeDocument(fileUrl, displayName, effectiveDocType, { mode: "full" }),
           sleep(FULL_ANALYSIS_BUDGET_MS).then(() => null),
         ]);
         if (full) {
           analysis = full;
         } else if (!analysis.isRelevantForTenders) {
-          analysis = analyzeDocumentFallback(displayName, docType);
-        } else if (wantsFullCatalog) {
+          analysis = analyzeDocumentFallback(displayName, effectiveDocType);
+        } else {
+          const catalogCount = Math.max(
+            analysis.catalogItems?.length ?? 0,
+            analysis.products?.length ?? 0
+          );
           analysis = {
             ...analysis,
             warning:
               analysis.warning ||
-              "Каталог из приложения РУ ещё не разобран полностью — идёт фоновая проверка. Можно нажать «Перепроверить» на карточке документа.",
+              (catalogCount <= 8
+                ? "Каталог из приложения РУ ещё не разобран полностью — идёт фоновая проверка. Можно нажать «Перепроверить» на карточке документа."
+                : "Полный разбор не уложился в лимит времени — нажмите «Перепроверить» для повторной проверки."),
           };
           analysisPending = true;
         }
@@ -174,7 +185,7 @@ export async function POST(req: NextRequest) {
         after(async () => {
           try {
             await prisma.document.update({ where: { id: docId }, data: { status: "pending" } });
-            const full = await analyzeDocument(fileUrl, displayName, docType, { mode: "full" });
+            const full = await analyzeDocument(fileUrl, displayName, effectiveDocType, { mode: "full" });
             await saveDocumentAnalysis(docId, companyId, full, { existingExpiresAt: expiresAt });
           } catch (e) {
             console.error(`Background analysis failed for ${docId}:`, e);
@@ -193,7 +204,7 @@ export async function POST(req: NextRequest) {
       }
     } catch (e) {
       console.error("Analysis failed:", e);
-      const fallback = analyzeDocumentFallback(displayName, docType);
+      const fallback = analyzeDocumentFallback(displayName, effectiveDocType);
       isRelevant = fallback.isRelevantForTenders === true;
       aiSummary = fallback.summary;
       aiWarning = fallback.warning;
@@ -209,7 +220,7 @@ export async function POST(req: NextRequest) {
         expiresAt: finalDoc?.expiresAt?.toISOString() ?? null,
         createdAt: finalDoc?.createdAt?.toISOString() ?? new Date().toISOString(),
       },
-      warning: aiWarning || profileWarning,
+      warning: aiWarning || typeAutoNote || profileWarning,
       profileWarning,
       aiWarning,
       aiSummary,

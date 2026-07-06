@@ -4,16 +4,16 @@
 
 import { prisma } from "@/lib/prisma";
 import { fetchNoticeDetails, toImportedTender } from "@/lib/zakupkiImport";
-import { rebuildTendersForAllCompanies } from "@/lib/tenderFeedCache";
+import { rebuildTendersForAllCompaniesNow } from "@/lib/tenderFeedCache";
 import { normalizeStoredRequirements } from "@/lib/textNormalize";
+import { tenderRowFromRequirements } from "@/lib/tenderMeta";
+import { summarizeTzDisplayCounts } from "@/lib/tenderPresentation";
 import type { Prisma } from "@/generated/prisma/client";
 
 const PENDING_TZ_WHERE: Prisma.TenderWhereInput = {
   status: "active",
-  AND: [
-    { requirements: { contains: '"importedFromEis":true' } },
-    { requirements: { contains: '"tzEnrichmentPending":true' } },
-  ],
+  importedFromEis: true,
+  tzEnrichmentPending: true,
 };
 
 export interface TzEnrichmentJobState {
@@ -50,8 +50,35 @@ export function getTzEnrichmentState(): TzEnrichmentJobState {
   return { ...state };
 }
 
+/** Сбой TLS из‑за отечественного сертификата zakupki.gov.ru (Минцифры) */
+export function isRussianTlsCertError(error: unknown): boolean {
+  const parts: string[] = [];
+  if (error instanceof Error) {
+    parts.push(error.message);
+    const cause = (error as Error & { cause?: unknown }).cause;
+    if (cause instanceof Error) parts.push(cause.message, cause.code || "");
+    else if (cause != null) parts.push(String(cause));
+    const code = (error as Error & { code?: string }).code;
+    if (code) parts.push(code);
+  } else {
+    parts.push(String(error));
+  }
+  const blob = parts.join(" ").toLowerCase();
+  return (
+    blob.includes("unable to verify") ||
+    blob.includes("self-signed") ||
+    blob.includes("self signed") ||
+    blob.includes("certificate") ||
+    blob.includes("cert_") ||
+    blob.includes("unknown ca") ||
+    blob.includes("err_tls")
+  );
+}
+
 /** Сбой сети / DNS — закупку не снимаем с очереди, повторим позже */
 export function isTransientNetworkError(error: unknown): boolean {
+  if (isEisRateLimitError(error)) return true;
+  if (isRussianTlsCertError(error)) return true;
   const parts: string[] = [];
   if (error instanceof Error) {
     parts.push(error.message);
@@ -74,6 +101,22 @@ export function isTransientNetworkError(error: unknown): boolean {
     blob.includes("socket hang up") ||
     blob.includes("aborted due to timeout")
   );
+}
+
+/** zakupki.gov.ru отвечает 434/503 при перегрузке или rate-limit */
+export function isEisRateLimitError(error: unknown): boolean {
+  const blob = String(error instanceof Error ? error.message : error);
+  return /\bHTTP 434\b/.test(blob) || /\bHTTP 503\b/.test(blob) || /\bHTTP 429\b/.test(blob);
+}
+
+let eisRateLimitPausedUntil = 0;
+
+export function isEisRateLimitPaused(): boolean {
+  return Date.now() < eisRateLimitPausedUntil;
+}
+
+function pauseEisRateLimit(minutes = 10): void {
+  eisRateLimitPausedUntil = Date.now() + minutes * 60_000;
 }
 
 export async function countPendingTzEnrichment(): Promise<number> {
@@ -192,12 +235,12 @@ export async function enrichTenderById(
       where: { id: tender.id },
       data: {
         title: imported.title,
-        requirements: JSON.stringify(requirements),
+        ...tenderRowFromRequirements(requirements),
       },
     });
 
     if (!options.skipFeedCache) {
-      void rebuildTendersForAllCompanies([tender.id]);
+      rebuildTendersForAllCompaniesNow([tender.id]);
     }
 
     const tzEnrichmentPending = false;
@@ -222,7 +265,13 @@ export async function enrichTenderById(
     if (!transient) {
       console.error(`[tz-enrich] ${tender.externalId}:`, e);
     } else {
-      console.warn(`[tz-enrich] ${tender.externalId}: сеть недоступна, останется в очереди`);
+      if (isRussianTlsCertError(e)) {
+        console.warn(
+          `[tz-enrich] ${tender.externalId}: TLS-сертификат zakupki.gov.ru не доверен — установите корневой сертификат Минцифры (gosuslugi.ru/crt) и задайте ZAKUPKI_CA_FILE в .env`
+        );
+      } else {
+        console.warn(`[tz-enrich] ${tender.externalId}: сеть недоступна, останется в очереди`);
+      }
     }
     try {
       const prev = JSON.parse(tender.requirements) as Record<string, unknown>;
@@ -236,11 +285,11 @@ export async function enrichTenderById(
       }
       await prisma.tender.update({
         where: { id: tender.id },
-        data: { requirements: JSON.stringify(prev) },
+        data: tenderRowFromRequirements(prev),
       });
       if (!transient) {
         if (!options.skipFeedCache) {
-          void rebuildTendersForAllCompanies([tender.id]);
+          rebuildTendersForAllCompaniesNow([tender.id]);
         }
       }
     } catch {
@@ -254,13 +303,21 @@ export async function enrichTenderById(
       tzEnrichmentPending: transient,
       specCount: 0,
       productCount: 0,
-      message: transient
-        ? "Нет связи с zakupki.gov.ru — закупка останется в очереди"
-        : "Не удалось скачать или разобрать ТЗ",
+      message: formatZakupkiEnrichError(e, transient),
       error: String(e),
       transientNetworkError: transient,
     };
   }
+}
+
+function formatZakupkiEnrichError(error: unknown, transient: boolean): string {
+  if (isEisRateLimitError(error)) {
+    return "zakupki.gov.ru временно ограничивает запросы (слишком часто). Подождите 10–15 минут и попробуйте снова.";
+  }
+  if (transient) {
+    return "Не удалось связаться с zakupki.gov.ru. Проверьте интернет; если сайт открывается в браузере — подождите и повторите (сервер ЕИС мог быть перегружен).";
+  }
+  return "Не удалось скачать или разобрать ТЗ";
 }
 
 const TENDER_ENRICH_TIMEOUT_MS = 75_000;
@@ -288,6 +345,10 @@ export async function enrichPendingTendersInBackground(
   options: { skipFeedCache?: boolean } = {}
 ): Promise<TzEnrichmentJobState> {
   if (state.running) return getTzEnrichmentState();
+  if (isEisRateLimitPaused()) {
+    state.lastMessage = "Пауза: zakupki.gov.ru ограничивает запросы";
+    return getTzEnrichmentState();
+  }
 
   const batchLimit = Math.max(1, Math.min(500, Math.floor(limit) || 80));
 
@@ -307,19 +368,34 @@ export async function enrichPendingTendersInBackground(
       const tenders = await prisma.tender.findMany({
         where: PENDING_TZ_WHERE,
         orderBy: [{ deadline: "asc" }, { publishedAt: "desc" }],
-        take: batchLimit,
-        select: { id: true, externalId: true },
+        take: batchLimit * 2,
+        select: { id: true, externalId: true, requirements: true },
       });
 
+      const prioritized = tenders
+        .map((t) => {
+          let reqs: Record<string, unknown> = {};
+          try {
+            reqs = JSON.parse(t.requirements) as Record<string, unknown>;
+          } catch {}
+          const products = ((reqs.tzProducts as string[]) || []).length;
+          const specs = ((reqs.productSpecs as string[]) || []).length;
+          return { tender: t, priority: products > 0 ? 2 : specs > 0 ? 1 : 0 };
+        })
+        .sort((a, b) => b.priority - a.priority)
+        .slice(0, batchLimit)
+        .map((x) => x.tender);
+
       state.lastMessage =
-        pendingTotal > tenders.length
-          ? `Разбор ТЗ: ${tenders.length} из ${pendingTotal} в очереди…`
-          : `Разбор ТЗ: ${tenders.length} закупок…`;
+        pendingTotal > prioritized.length
+          ? `Разбор ТЗ: ${prioritized.length} из ${pendingTotal} в очереди…`
+          : `Разбор ТЗ: ${prioritized.length} закупок…`;
 
       let networkFails = 0;
+      let rateLimitHits = 0;
 
-      for (const tender of tenders) {
-        state.lastMessage = `Загрузка ${tender.externalId}… (${state.processed}/${tenders.length})`;
+      for (const tender of prioritized) {
+        state.lastMessage = `Загрузка ${tender.externalId}… (${state.processed}/${prioritized.length})`;
         state.processed += 1;
         let result: SingleTzEnrichResult;
         try {
@@ -356,7 +432,7 @@ export async function enrichPendingTendersInBackground(
                 prev.tzEnrichmentError = String(e).slice(0, 240);
                 await prisma.tender.update({
                   where: { id: tender.id },
-                  data: { requirements: JSON.stringify(prev) },
+                  data: tenderRowFromRequirements(prev),
                 });
                 updatedTenderIds.push(tender.id);
               }
@@ -370,20 +446,34 @@ export async function enrichPendingTendersInBackground(
         }
         if (result.transientNetworkError) {
           networkFails += 1;
-          state.lastMessage = `⚠ нет связи с zakupki.gov.ru (${networkFails} подряд)`;
-          if (networkFails >= 5) {
-            state.lastMessage = "Пауза 60 с — zakupki.gov.ru не отвечает…";
-            await new Promise((r) => setTimeout(r, 60_000));
-            networkFails = 0;
+          const rateLimited =
+            isEisRateLimitError(result.error) || isEisRateLimitError(result.message);
+          if (rateLimited) {
+            rateLimitHits += 1;
+            state.lastMessage = `⚠ zakupki.gov.ru: лимит запросов (${rateLimitHits})`;
+            if (rateLimitHits >= 3) {
+              pauseEisRateLimit(10);
+              state.lastMessage = "Пауза 10 мин — zakupki.gov.ru ограничивает запросы (434)";
+              break;
+            }
+            await new Promise((r) => setTimeout(r, 90_000));
+          } else {
+            state.lastMessage = `⚠ нет связи с zakupki.gov.ru (${networkFails} подряд)`;
+            if (networkFails >= 5) {
+              state.lastMessage = "Пауза 60 с — zakupki.gov.ru не отвечает…";
+              await new Promise((r) => setTimeout(r, 60_000));
+              networkFails = 0;
+            }
           }
         } else {
           networkFails = 0;
+          rateLimitHits = 0;
         }
         if (result.tzParsedFromFile) {
           state.enriched += 1;
           state.lastMessage = `✓ ТЗ: ${result.externalId} (${state.enriched}/${state.processed})`;
         } else if (!result.transientNetworkError) {
-          state.lastMessage = `· ${result.externalId} (${state.processed}/${tenders.length})`;
+          state.lastMessage = `· ${result.externalId} (${state.processed}/${prioritized.length})`;
         }
         await new Promise((r) => setTimeout(r, 500));
       }

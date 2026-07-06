@@ -13,7 +13,8 @@ import {
   type DocumentParseResult,
 } from "@/lib/tzDocumentParse";
 import { classifyProcurementDocument } from "@/lib/procurementDocumentGroups";
-import { isPlaceholderPositionName, looksLikeProductName } from "@/lib/tzSanitizer";
+import { zakupkiFetch } from "@/lib/zakupkiQueue";
+import { isPlaceholderPositionName, isUsefulTzCharacteristic, looksLikeProductName } from "@/lib/tzSanitizer";
 
 export { classifyProcurementDocument, DOCUMENT_GROUP_LABELS } from "@/lib/procurementDocumentGroups";
 
@@ -135,28 +136,68 @@ function normalizeFilestoreUrl(href: string): string {
   return `https://zakupki.gov.ru${href.startsWith("/") ? "" : "/"}${href}`;
 }
 
+function resolveAttachmentName(title: string | undefined, linkText: string): string {
+  const titleClean = (title || "").replace(/_/g, " ").trim();
+  const textClean = linkText.replace(/\s+/g, " ").trim();
+  const ext = titleClean.match(/\.(\w+)$/i)?.[1];
+
+  if (textClean.length >= 3 && !/^document\.bin$/i.test(textClean)) {
+    if (ext && !new RegExp(`\\.${ext}$`, "i").test(textClean)) {
+      return `${textClean}.${ext}`;
+    }
+    if (!/\.\w{2,5}$/i.test(textClean) && ext) {
+      return `${textClean}.${ext}`;
+    }
+    return textClean;
+  }
+
+  if (titleClean.length >= 4) return titleClean;
+  return "document.bin";
+}
+
 /** Парсит documents.html — список вложений filestore */
 export function parseDocumentsPageHtml(html: string): ZakupkiAttachment[] {
   const docs: ZakupkiAttachment[] = [];
   const seen = new Set<string>();
 
-  // В разных типах извещений (ea/zk/ok и т.д.) ссылки могут вести как на filestore,
-  // так и на download/downloadFile и т.п. Ищем оба типа.
+  // Основной формат ЕИС: <a href="...filestore..." title="file.pdf">Человекочитаемое имя</a>
+  const anchorRe =
+    /<a\s+[^>]*href="([^"]*(?:filestore|download|downloadFile)[^"]*)"[^>]*>([\s\S]*?)<\/a>/gi;
+  let m;
+  while ((m = anchorRe.exec(html)) !== null) {
+    const url = normalizeFilestoreUrl(m[1]);
+    if (seen.has(url)) continue;
+
+    const title = m[0].match(/\btitle="([^"]+)"/i)?.[1];
+    const linkText = stripHtml(m[2]);
+    const name = resolveAttachmentName(title, linkText);
+    if (/^document\.bin$/i.test(name)) continue;
+
+    seen.add(url);
+    let score = scoreAttachmentName(name);
+    if (score <= 0 && /\.(pdf|docx?|xlsx?|rtf|zip|rar|7z)$/i.test(name)) score = 8;
+    if (score <= 0) score = 8;
+
+    docs.push({ name, url, score });
+  }
+
+  // Fallback для нестандартной вёрстки
   const re =
     /([\s\S]{0,600})href="([^"]*(?:filestore|download|downloadFile)[^"]+)"([\s\S]{0,260})/gi;
-  let m;
   while ((m = re.exec(html)) !== null) {
     const url = normalizeFilestoreUrl(m[2]);
     if (seen.has(url)) continue;
     seen.add(url);
 
     const ctx = m[1] + " " + m[3];
-    const name = extractFileNameFromContext(ctx);
+    const titleInCtx = ctx.match(/\btitle="([^"]+)"/i)?.[1];
+    const name = titleInCtx
+      ? resolveAttachmentName(titleInCtx, extractFileNameFromContext(ctx))
+      : extractFileNameFromContext(ctx);
+    if (/^document\.bin$/i.test(name)) continue;
+
     let score = scoreAttachmentName(name);
-    // Любой файл с расширением — в список (для скачивания), даже если не парсим.
-    if (score <= 0 && /\.(pdf|docx?|xlsx?|rtf|zip|html?)$/i.test(name)) {
-      score = 8;
-    }
+    if (score <= 0 && /\.(pdf|docx?|xlsx?|rtf|zip|rar|7z)$/i.test(name)) score = 8;
     if (score <= 0) continue;
 
     docs.push({ name, url, score });
@@ -204,7 +245,7 @@ async function readResponseText(response: Response): Promise<string> {
 }
 
 async function fetchWithTimeout(url: string): Promise<Response> {
-  return fetch(url, {
+  return zakupkiFetch(url, {
     headers: {
       "User-Agent": USER_AGENT,
       Accept: "*/*",
@@ -275,7 +316,7 @@ function normalizeAttachmentName(name: string): string {
   return name
     .toLowerCase()
     .replace(/\s+/g, " ")
-    .replace(/\.(docx?|pdf|rtf)$/i, "")
+    .replace(/\.(docx?|pdf|rtf|xlsx?|zip|rar|7z)$/i, "")
     .trim();
 }
 
@@ -289,23 +330,73 @@ function dedupeAttachments(attachments: ZakupkiAttachment[]): ZakupkiAttachment[
   return [...byName.values()].sort((a, b) => b.score - a.score);
 }
 
+function isTzMetaLine(spec: string): boolean {
+  const key = spec.toLowerCase().replace(/\s+/g, " ").trim();
+  return (
+    /^позиция\s*тз/i.test(key) ||
+    /^объём закупки:/i.test(key) ||
+    /^ктру:/i.test(key) ||
+    /регистрационн[ое]+\s+удостоверен/i.test(key)
+  );
+}
+
+function countUsefulTzSpecs(specs: string[]): number {
+  return specs.filter((s) => {
+    if (isTzMetaLine(s)) return false;
+    if (s.includes(" — ")) return isUsefulTzCharacteristic(s);
+    const m = s.match(/^([^:]{3,120}):\s*(.+)$/);
+    if (m) return isUsefulTzCharacteristic(s, m[1], m[2]);
+    return false;
+  }).length;
+}
+
+/** Ключ для дедупа: «Материал бахил: …» совпадает с «Набор … — Материал бахил: …» */
+function specMergeKey(spec: string): string {
+  const norm = spec.replace(/\s+/g, " ").trim();
+  if (norm.includes(" — ")) {
+    const tail = norm.split(/\s+[—–-]\s+/).pop() || norm;
+    return tail.toLowerCase();
+  }
+  return norm.toLowerCase();
+}
+
 function mergeSpecs(htmlSpecs: string[], tzSpecs: string[]): string[] {
+  const tzUseful = countUsefulTzSpecs(tzSpecs);
+  const htmlUseful = countUsefulTzSpecs(htmlSpecs);
+
+  // Файл ТЗ часто даёт 1–2 строки, а каталог КТРУ на ЕИС — полный список признаков
+  const htmlToMerge =
+    htmlUseful > tzUseful
+      ? htmlSpecs
+      : htmlSpecs.filter(
+          (s) => /^КТРУ:/i.test(s) || /регистрационн[ое]+\s+удостоверен/i.test(s)
+        );
+
   const seen = new Set<string>();
   const result: string[] = [];
 
-  const htmlMeta = htmlSpecs.filter(
-    (s) => /^КТРУ:/i.test(s) || /регистрационн[ое]+\s+удостоверен/i.test(s)
-  );
+  for (const spec of [...tzSpecs, ...htmlToMerge]) {
+    const trimmed = spec.replace(/\s+/g, " ").trim();
+    if (!trimmed) continue;
 
-  for (const spec of [...tzSpecs, ...htmlMeta]) {
-    const key = spec.toLowerCase().replace(/\s+/g, " ").trim();
-    if (!key) continue;
-    const isPosition = /^позиция\s*тз/i.test(key);
-    const isCharLine = spec.includes(" — ");
-    if (!isPosition && !isCharLine && seen.has(key)) continue;
-    if (!isPosition && !isCharLine) seen.add(key);
-    result.push(spec);
+    const lower = trimmed.toLowerCase();
+    const isPosition = /^позиция\s*тз/i.test(lower);
+    const isVolume = /^объём закупки:/i.test(lower);
+
+    if (isPosition || isVolume) {
+      const metaKey = isVolume ? `vol:${lower.replace(/\d+/g, "#")}` : lower;
+      if (seen.has(metaKey)) continue;
+      seen.add(metaKey);
+      result.push(trimmed);
+      continue;
+    }
+
+    const key = specMergeKey(trimmed);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(trimmed);
   }
+
   return result.slice(0, 300);
 }
 
@@ -529,7 +620,7 @@ export async function enrichNoticeFromTzDocuments(
   options: EnrichTzOptions = {}
 ): Promise<TzEnrichmentResult | null> {
   const maxParse = options.maxDocuments ?? (options.batchLight ? 3 : 4);
-  const maxAll = options.batchLight ? maxParse : (options.maxAllDocuments ?? 12);
+  const maxAll = options.batchLight ? maxParse : (options.maxAllDocuments ?? 24);
 
   const docsUrl = `https://zakupki.gov.ru/epz/order/notice/${noticeType}/view/documents.html?regNumber=${regNumber}`;
   const html = await readResponseText(await fetchWithTimeout(docsUrl));
@@ -722,4 +813,174 @@ export async function fetchDocumentsPageHtml(regNumber: string, noticeType: stri
   const res = await fetchWithTimeout(url);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return readResponseText(res);
+}
+
+const PLACEHOLDER_PATTERNS: Array<{ re: RegExp; attachmentRe: RegExp }> = [
+  { re: /извещени/i, attachmentRe: /извещени/i },
+  { re: /описание объекта закупки/i, attachmentRe: /описание объекта закупки/i },
+  { re: /техническ.*задани|\bтз\b/i, attachmentRe: /техническ.*задани|\bтз\b|описание объекта/i },
+  { re: /проект\s+контракта/i, attachmentRe: /проект\s+контракта/i },
+];
+
+function pickAttachmentByDisplayName(
+  docName: string,
+  attachments: ZakupkiAttachment[]
+): ZakupkiAttachment | null {
+  if (attachments.length === 0) return null;
+
+  const exact = attachments.find((a) => a.name === docName);
+  if (exact) return exact;
+
+  const norm = normalizeAttachmentName(docName);
+  const byNorm = attachments.find((a) => normalizeAttachmentName(a.name) === norm);
+  if (byNorm) return byNorm;
+
+  const partial = attachments.find((a) => {
+    const n = normalizeAttachmentName(a.name);
+    return n.includes(norm) || norm.includes(n);
+  });
+  if (partial) return partial;
+
+  for (const { re, attachmentRe } of PLACEHOLDER_PATTERNS) {
+    if (re.test(docName)) {
+      const hit = attachments.find((a) => attachmentRe.test(a.name));
+      if (hit) return hit;
+    }
+  }
+
+  // Извещение на ЕИС часто = ElectronicAuction{номер}.pdf
+  if (/извещени/i.test(docName)) {
+    const eaPdf = attachments.find(
+      (a) => /^electronicauction/i.test(a.name) && /\.pdf$/i.test(a.name)
+    );
+    if (eaPdf) return eaPdf;
+    const anyNoticePdf = attachments.find(
+      (a) => /\.pdf$/i.test(a.name) && !/нмцк|обоснован/i.test(a.name)
+    );
+    if (anyNoticePdf) return anyNoticePdf;
+  }
+
+  // ООЗ / ТЗ — отдельный PDF или docx
+  if (/описание|техническ.*задани|\bтз\b|объект\s+закупки/i.test(docName)) {
+    const ooz = attachments.find((a) =>
+      /описание объекта|техническ.*задани|спецификац|характеристик/i.test(a.name)
+    );
+    if (ooz) return ooz;
+
+    const tzPdf = attachments.find((a) =>
+      /техническ.*задани/i.test(a.name) && /\.pdf$/i.test(a.name)
+    );
+    if (tzPdf) return tzPdf;
+
+    const nonNmck = attachments.filter(
+      (a) =>
+        !/нмцк|расчет\s*нмцк|обоснован\s+начальн/i.test(a.name) &&
+        !isContractDocument(a.name)
+    );
+    const pdfs = nonNmck.filter((a) => /\.pdf$/i.test(a.name));
+    if (pdfs.length === 1) return pdfs[0];
+    if (nonNmck.length === 1) return nonNmck[0];
+    if (pdfs.length > 0 && attachments.length <= 3) return pdfs[0];
+  }
+
+  if (/проект\s+контракта/i.test(docName)) {
+    return attachments.find((a) => /проект\s+контракта/i.test(a.name)) ?? null;
+  }
+
+  return null;
+}
+
+const EIS_DOCS_CACHE = new Map<string, { at: number; docs: ParsedTzDocument[] }>();
+const EIS_DOCS_TTL_MS = 6 * 60 * 60 * 1000;
+/** Сбрасывать кэш при смене parseDocumentsPageHtml */
+const EIS_DOCS_PARSER_REV = 2;
+
+/** Реальные вложения с documents.html (без разбора ТЗ) */
+export async function listTenderEisAttachments(
+  regNumber: string,
+  noticeType: string
+): Promise<ParsedTzDocument[]> {
+  const html = await fetchDocumentsPageHtml(regNumber, noticeType);
+  const attachments = dedupeAttachments(parseDocumentsPageHtml(html));
+  return attachments.map((a) => ({
+    name: a.name,
+    url: a.url,
+    format: a.name.match(/\.(\w+)$/i)?.[1]?.toLowerCase() || "unknown",
+    sizeBytes: 0,
+    parsed: false,
+    specCount: 0,
+  }));
+}
+
+const NOTICE_TYPE_FALLBACKS = ["ea20", "ea44", "zk20", "ok504", "zp504", "ezt20"];
+
+export async function listTenderEisAttachmentsCached(
+  regNumber: string,
+  noticeType: string
+): Promise<ParsedTzDocument[]> {
+  const types = [noticeType, ...NOTICE_TYPE_FALLBACKS.filter((t) => t !== noticeType)];
+  for (const nt of types) {
+    const key = `${EIS_DOCS_PARSER_REV}:${nt}:${regNumber}`;
+    const hit = EIS_DOCS_CACHE.get(key);
+    if (hit && Date.now() - hit.at < EIS_DOCS_TTL_MS && hit.docs.length > 0) {
+      return hit.docs;
+    }
+    try {
+      const docs = await listTenderEisAttachments(regNumber, nt);
+      if (docs.length > 0) {
+        EIS_DOCS_CACHE.set(key, { at: Date.now(), docs });
+        return docs;
+      }
+    } catch {
+      // try next notice type
+    }
+  }
+  return [];
+}
+
+/** Скачать вложение с ЕИС по отображаемому имени (PDF, ZIP и т.д.) */
+export async function fetchTenderAttachment(
+  regNumber: string,
+  noticeType: string,
+  docName: string
+): Promise<{
+  buffer: Buffer;
+  cachedPath: string;
+  fileName: string;
+  format: string;
+} | null> {
+  const types = [noticeType, ...NOTICE_TYPE_FALLBACKS.filter((t) => t !== noticeType)];
+
+  for (const nt of types) {
+    let attachments: ZakupkiAttachment[] = [];
+    try {
+      const html = await fetchDocumentsPageHtml(regNumber, nt);
+      attachments = dedupeAttachments(parseDocumentsPageHtml(html));
+    } catch {
+      continue;
+    }
+    if (attachments.length === 0) continue;
+
+    const attachment = pickAttachmentByDisplayName(docName, attachments);
+    if (!attachment) continue;
+
+    try {
+      const downloaded = await downloadToCache(regNumber, attachment);
+      if (!downloaded) continue;
+
+      const format =
+        attachment.name.match(/\.(\w+)$/i)?.[1]?.toLowerCase() || "bin";
+
+      return {
+        buffer: downloaded.buffer,
+        cachedPath: downloaded.cachedPath,
+        fileName: attachment.name,
+        format,
+      };
+    } catch (e) {
+      console.error(`[zakupki] download ${regNumber} ${attachment.name}:`, e);
+    }
+  }
+
+  return null;
 }

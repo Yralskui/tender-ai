@@ -7,7 +7,7 @@ import { createHash } from "crypto";
 import type { Document, PrismaClient } from "@/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
 import { buildCompanyFocus } from "@/lib/companyFocus";
-import { loadCompanyCatalogProducts, catalogRowsToStructured } from "@/lib/catalogProductSync";
+import { loadCompanyCatalogProducts, mergeCompanyCatalogSources } from "@/lib/catalogProductSync";
 import { mapCompanyDocuments } from "@/lib/matching";
 import { filterTendersForVertical } from "@/lib/productVertical";
 import {
@@ -21,11 +21,18 @@ import {
   type TenderRankInput,
 } from "@/lib/tenderRanking";
 import { perfLog } from "@/lib/perfLog";
+import { backgroundJobsInNext } from "@/lib/runtimeConfig";
+import { enqueueFeedCacheJob, type FeedCacheJob } from "@/lib/feedCacheJobQueue";
 
 const REBUILD_BATCH = 500;
 const PARTIAL_REBUILD_DEBOUNCE_MS = 5_000;
-const PARTIAL_REBUILD_MAX_BATCH = 400;
+const PARTIAL_REBUILD_MAX_BATCH = 100;
+const PARTIAL_REBUILD_GAP_MS = 1_500;
 const PARTIAL_LOG_MIN = 25;
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
 
 const rebuildLocks = new Set<string>();
 const rebuildStateByCompany = new Map<string, FeedCacheRebuildState>();
@@ -35,6 +42,8 @@ const pendingFullRebuildCompanies = new Set<string>();
 /** Глобальная очередь после sync / enrich — один flush на все компании */
 const pendingTenderIdsGlobal = new Set<string>();
 let globalFlushTimer: ReturnType<typeof setTimeout> | null = null;
+/** Одна цепочка stale-rebuild на компанию — не запускать 20 пачек подряд в одном тике */
+const staleRebuildQueued = new Set<string>();
 
 export interface CompanyFeedCacheStatus {
   count: number;
@@ -104,22 +113,18 @@ async function loadCompanyRankingContext(companyId: string) {
   }
 
   const catalogRows = await loadCompanyCatalogProducts(companyId);
-  const catalogStructured = catalogRowsToStructured(catalogRows);
   const docsForMatching = mapCompanyDocuments(company.documents);
-  const catalogProducts = catalogRows.map((r) => r.displayText || r.name);
+  const mergedCatalog = mergeCompanyCatalogSources({ catalogRows, docsForMatching });
+  const catalogStructured = mergedCatalog.catalogStructured;
+  const catalogProducts = mergedCatalog.catalogProducts;
 
-  const docsWithCatalog =
-    catalogStructured.length > 0 && docsForMatching.length > 0
-      ? docsForMatching.map((d, i) =>
-          i === 0 ? { ...d, catalogItems: catalogStructured } : d
-        )
-      : docsForMatching;
+  const docsWithCatalog = docsForMatching;
 
   const catalogHash = computeCatalogHash({
     companyDescription: company.description,
     okvedCodes,
     documents: company.documents,
-    catalogProductCount: catalogRows.length,
+    catalogProductCount: catalogProducts.length,
   });
 
   const companyProfile = {
@@ -141,6 +146,7 @@ async function loadCompanyRankingContext(companyId: string) {
     okvedCodes,
     documents: company.documents,
     catalogProducts,
+    catalogStructured,
     docsWithCatalog,
     catalogHash,
     companyProfile,
@@ -210,7 +216,7 @@ function rankTenderRow(
     ctx.catalogProducts,
     ctx.docsWithCatalog,
     ctx.companyProfile,
-    { light: true, parsedReqs }
+    { light: true, parsedReqs, catalogStructured: ctx.catalogStructured }
   );
 }
 
@@ -265,6 +271,9 @@ async function processTenderBatch(
         });
       })
     );
+    if (i + CHUNK < tenders.length) {
+      await yieldToEventLoop();
+    }
   }
 }
 
@@ -321,14 +330,14 @@ function mergePendingPartial(companyId: string, tenderIds: string[]) {
 function drainPendingForCompany(companyId: string) {
   if (pendingFullRebuildCompanies.has(companyId)) {
     pendingFullRebuildCompanies.delete(companyId);
-    scheduleCompanyFeedCacheRebuild(companyId, { full: true });
+    setTimeout(() => scheduleCompanyFeedCacheRebuild(companyId, { full: true }), PARTIAL_REBUILD_GAP_MS);
     return;
   }
   const pending = pendingPartialByCompany.get(companyId);
   if (pending && pending.size > 0) {
     const ids = [...pending];
     pending.clear();
-    scheduleCompanyFeedCacheRebuild(companyId, { tenderIds: ids });
+    setTimeout(() => scheduleCompanyFeedCacheRebuild(companyId, { tenderIds: ids }), PARTIAL_REBUILD_GAP_MS);
   }
 }
 
@@ -353,7 +362,11 @@ async function flushGlobalTenderFeedQueue() {
   const batch = [...pendingTenderIdsGlobal].slice(0, PARTIAL_REBUILD_MAX_BATCH);
   for (const id of batch) pendingTenderIdsGlobal.delete(id);
 
-  await rebuildTendersForAllCompaniesImmediate(batch);
+  if (!backgroundJobsInNext()) {
+    void enqueueFeedCacheJob({ type: "global", tenderIds: batch });
+  } else {
+    await rebuildTendersForAllCompaniesImmediate(batch);
+  }
 
   if (pendingTenderIdsGlobal.size > 0) {
     globalFlushTimer = setTimeout(() => void flushGlobalTenderFeedQueue(), PARTIAL_REBUILD_DEBOUNCE_MS);
@@ -471,27 +484,151 @@ export function scheduleCompanyFeedCacheRebuild(
   companyId: string,
   options: { tenderIds?: string[]; full?: boolean } = {}
 ) {
+  if (!backgroundJobsInNext()) {
+    void enqueueFeedCacheJob({
+      type: "rebuild",
+      companyId,
+      full: options.full,
+      tenderIds: options.tenderIds?.length ? options.tenderIds : undefined,
+    });
+    return;
+  }
+
   if (rebuildLocks.has(companyId)) {
     if (options.full) pendingFullRebuildCompanies.add(companyId);
     else if (options.tenderIds?.length) mergePendingPartial(companyId, options.tenderIds);
     return;
   }
-  void rebuildCompanyFeedCache(companyId, options).catch((e) => {
-    console.error(`[feed-cache] rebuild failed for ${companyId}:`, e);
-  });
+  setTimeout(() => {
+    void rebuildCompanyFeedCache(companyId, options).catch((e) => {
+      console.error(`[feed-cache] rebuild failed for ${companyId}:`, e);
+    });
+  }, 0);
 }
 
 export async function ensureCompanyFeedCache(companyId: string, catalogHash?: string) {
   const status = await getCompanyFeedCacheStatus(companyId, catalogHash);
   if (status.rebuilding) return status;
-  if (status.count === 0 || status.stale) {
-    scheduleCompanyFeedCacheRebuild(companyId, { full: status.stale || status.count === 0 });
+
+  if (status.count === 0) {
+    scheduleCompanyFeedCacheRebuild(companyId, { full: true });
+    return status;
   }
+
+  if (status.stale && catalogHash) {
+    scheduleStaleFeedMatchRebuild(companyId, catalogHash);
+  }
+
   return status;
+}
+
+function scheduleStaleFeedMatchRebuild(companyId: string, catalogHash: string) {
+  if (!backgroundJobsInNext()) {
+    void enqueueFeedCacheJob({ type: "stale", companyId, catalogHash });
+    return;
+  }
+  if (staleRebuildQueued.has(companyId) || rebuildLocks.has(companyId)) return;
+  staleRebuildQueued.add(companyId);
+  setTimeout(() => {
+    staleRebuildQueued.delete(companyId);
+    void rebuildStaleFeedMatches(companyId, catalogHash).catch((e) => {
+      console.error(`[feed-cache] stale partial failed for ${companyId}:`, e);
+    });
+  }, 300);
+}
+
+/** Пересчёт устаревших строк — по одной пачке с паузой, чтобы не блокировать dev-сервер */
+async function rebuildStaleFeedMatches(companyId: string, catalogHash: string) {
+  if (rebuildLocks.has(companyId)) {
+    scheduleStaleFeedMatchRebuild(companyId, catalogHash);
+    return;
+  }
+
+  const staleWhere = {
+    companyId,
+    OR: [{ catalogHash: { not: catalogHash } }, { catalogHash: null }],
+  };
+
+  const staleRows = await prisma.tenderMatch.findMany({
+    where: staleWhere,
+    select: { tenderId: true },
+    take: PARTIAL_REBUILD_MAX_BATCH,
+  });
+
+  if (staleRows.length > 0) {
+    await rebuildCompanyFeedCache(companyId, {
+      tenderIds: staleRows.map((r) => r.tenderId),
+    });
+    const remaining = await prisma.tenderMatch.count({ where: staleWhere });
+    if (remaining > 0) {
+      setTimeout(
+        () => void rebuildStaleFeedMatches(companyId, catalogHash),
+        PARTIAL_REBUILD_GAP_MS
+      );
+    }
+    return;
+  }
+
+  const missing = await prisma.tender.findMany({
+    where: {
+      ...REAL_EIS_TENDER_WHERE,
+      matches: { none: { companyId } },
+    },
+    select: { id: true },
+    take: PARTIAL_REBUILD_MAX_BATCH,
+  });
+
+  if (missing.length === 0) return;
+
+  await rebuildCompanyFeedCache(companyId, {
+    tenderIds: missing.map((m) => m.id),
+  });
+  setTimeout(() => void rebuildStaleFeedMatches(companyId, catalogHash), PARTIAL_REBUILD_GAP_MS);
 }
 
 export async function rebuildTendersForAllCompanies(tenderIds: string[]) {
   queueTenderFeedCacheUpdate(tenderIds);
+}
+
+/** Сразу пересчитать (после разбора ТЗ на карточке) — без 5 с debounce */
+export function rebuildTendersForAllCompaniesNow(tenderIds: string[]) {
+  const ids = tenderIds.filter(Boolean);
+  if (ids.length === 0) return;
+  if (!backgroundJobsInNext()) {
+    void enqueueFeedCacheJob({ type: "global", tenderIds: ids });
+    return;
+  }
+  void rebuildTendersForAllCompaniesImmediate(ids);
+}
+
+/** Выполнить задачу из очереди worker */
+export async function processFeedCacheJob(job: FeedCacheJob): Promise<void> {
+  if (job.type === "rebuild") {
+    await rebuildCompanyFeedCache(job.companyId, {
+      full: job.full,
+      tenderIds: job.tenderIds,
+    });
+    return;
+  }
+  if (job.type === "stale") {
+    await rebuildStaleFeedMatches(job.companyId, job.catalogHash);
+    return;
+  }
+  if (job.type === "global") {
+    await rebuildTendersForAllCompaniesImmediate(job.tenderIds);
+  }
+}
+
+/** Свежий ранг, если тендер обновился после последнего кэша */
+export async function rerankTenderForCompanyCache(
+  companyId: string,
+  tender: TenderRankInput & { id: string }
+): Promise<TenderFeedRank | null> {
+  const ctx = await loadCompanyRankingContext(companyId);
+  if (!ctx) return null;
+  const rank = rankTenderRow(tender, ctx);
+  await upsertTenderMatchRank(prisma, companyId, tender.id, rank, ctx.catalogHash);
+  return rank;
 }
 
 export function computeCatalogHashFromDocuments(

@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
+import { useRouter } from "next/navigation";
 import {
   TENDER_FEED_RETURN_KEY,
   TENDER_FEED_SCROLL_KEY,
@@ -29,20 +30,15 @@ export function TenderFeedScrollRestore({ returnHref }: { returnHref: string }) 
   return null;
 }
 
-/** Авто-разбор ТЗ и подгрузка новых закупок с ЕИС (с задержкой, чтобы не мешать ленте) */
+/** Разбор ТЗ — только на сервере (планировщик). Клиент не запускает тяжёлые POST. */
 export function BackgroundTzEnrichment() {
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      void fetch("/api/tenders/enrich-tz", { method: "POST" }).catch(() => {});
-      void fetch("/api/tenders/auto-sync", { method: "POST" }).catch(() => {});
-    }, 45_000);
-    return () => window.clearTimeout(timer);
-  }, []);
-
   return null;
 }
 
-/** Ожидание первичного кэша совпадений — перезагрузка ленты когда готово */
+const POLL_MS = 10_000;
+const MAX_POLLS = 36;
+
+/** Ожидание первичного кэша — мягкое обновление без бесконечных полных перезагрузок */
 export function FeedCachePoller({
   active,
   feedMode,
@@ -50,11 +46,20 @@ export function FeedCachePoller({
   active: boolean;
   feedMode: string;
 }) {
+  const router = useRouter();
+  const pollsRef = useRef(0);
+
   useEffect(() => {
     if (!active || (feedMode !== "matched" && feedMode !== "profile")) return;
 
+    pollsRef.current = 0;
     let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
     const poll = async () => {
+      if (cancelled || pollsRef.current >= MAX_POLLS) return;
+      pollsRef.current += 1;
+
       try {
         const res = await fetch("/api/tenders/feed-cache");
         const data = await res.json();
@@ -63,22 +68,24 @@ export function FeedCachePoller({
           !data.rebuilding &&
           (feedMode === "matched" ? data.matchedCount > 0 : data.profileCount > 0);
         if (ready) {
-          window.location.reload();
+          router.refresh();
           return;
         }
       } catch {
         // ignore
       }
-      if (!cancelled) {
-        window.setTimeout(() => void poll(), 3000);
+
+      if (!cancelled && pollsRef.current < MAX_POLLS) {
+        timer = setTimeout(() => void poll(), POLL_MS);
       }
     };
 
-    void poll();
+    timer = setTimeout(() => void poll(), POLL_MS);
     return () => {
       cancelled = true;
+      if (timer) clearTimeout(timer);
     };
-  }, [active, feedMode]);
+  }, [active, feedMode, router]);
 
   return null;
 }

@@ -86,11 +86,14 @@ export function isWorksProcurement(text: string): boolean {
 /** Признаки реальной номенклатуры (изделие, препарат, расходник) */
 const PRODUCT_NOUNS: RegExp[] = [
   /перчат/i, /шприц/i, /бинт/i, /салфет/i, /\bбель/i, /халат/i, /маск/i,
-  /мешк/i, /пакет/i, /контейнер/i, /бахил/i, /простын/i,
+  /мешк/i, /пакет/i, /контейнер/i, /бахил/i, /простын/i, /фартук/i, /трус/i,
   /катетер/i, /игл/i, /наволоч/i, /чехол/i, /жгут/i, /шовн/i, /скальпел/i, /зонд/i,
   /издели/i, /аппарат/i, /оборудован/i, /препарат/i, /раствор/i, /ампул/i,
   /неткан/i, /полотн/i, /марл/i, /повязк/i, /пластыр/i, /калоприемник/i,
   /шпатель/i, /воротник/i, /одежд/i, /колпач/i, /шапоч/i, /набор\s+бель/i, /комплект/i,
+  /нарукавник/i, /берет/i, /костюм/i,
+  /рентген/i, /томограф/i, /ультразвук/i, /дефибрилл/i, /вентилятор/i, /эндоскоп/i,
+  /маммограф/i, /флюорограф/i, /диагност/i,
 ];
 
 const PRODUCT_SIGNALS: RegExp[] = [
@@ -111,6 +114,12 @@ const PRODUCT_SIGNALS: RegExp[] = [
   /штука|шт\.|упаковк[аи]\s+(товара|продукц)|комплект\s+бель/i,
   /набор\s+бель/i,
   /шапоч/i,
+  /фартук/i,
+  /трус/i,
+  /рентген/i,
+  /томограф/i,
+  /система\s+.*диагност/i,
+  /ультразвук/i,
 ];
 
 export function detectProcurementKind(...parts: Array<string | undefined | null>): ProcurementKind {
@@ -280,6 +289,9 @@ export function isCharacteristicFieldName(text: string): boolean {
   if (/^(текстурирован|неопудрен|нестерильн|стерильн|цвет|материал|длина|ширина|размер|назначение|манжета|толщин|плотност)/i.test(t)) {
     return true;
   }
+  if (/^(максимальн|минимальн|номинальн|управлен|мощност|напряжен|wi-?fi|модуль|автомат|дистанционн|комплект)/i.test(t)) {
+    return true;
+  }
   if (/соответствие\s*$/i.test(t) || /наличие\s*$/i.test(t)) return true;
   if (/^поставляется\b/i.test(t)) return true;
   if (/^в\s+стерильн/i.test(t)) return true;
@@ -363,6 +375,8 @@ export function isGarbageCharacteristic(spec: string): boolean {
     return true;
   }
   if (norm.length > 180 && !PRODUCT_SIGNALS.some((re) => re.test(norm))) return true;
+  if (/значение\s+характеристики\s+не\s+может\s+изменяться/i.test(norm)) return true;
+  if (/^рентгенозащит/i.test(norm) && /\bда\b/i.test(norm)) return true;
   return false;
 }
 
@@ -377,12 +391,15 @@ export function isUsefulTzCharacteristic(spec: string, field?: string, value?: s
 
   if (!f && !v) return false;
 
+  if (/значение\s+характеристики\s+не\s+может\s+изменяться/i.test(norm)) return false;
+
   // Длинное описание варианта изделия по КТРУ (не параметр для сверки)
   if (f.length > 85 && /хирургическ|для процедур|для операций|изготовлен|одноразов/i.test(f)) {
     return false;
   }
 
   const val = v.toLowerCase().trim();
+  if (/^(да|нет)$/i.test(val) && (f.length > 45 || /^рентгенозащит/i.test(f))) return false;
   if (/^(соответствие|наличие|отсутствие)$/i.test(val)) {
     if (/\d/.test(f) || /не менее|не более|>=|<=/i.test(f) || /не менее|не более|>=|<=/i.test(norm)) {
       return true;

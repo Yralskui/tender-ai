@@ -1,28 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { RefreshCw } from "lucide-react";
 
-/** Клиентский дубль: раз в минуту проверяет CD (основной планировщик — на сервере) */
-const CLIENT_POLL_MS = 60_000;
-
-/** Тихо запускает автообновление при открытии приложения и каждую минуту (с учётом CD) */
+/**
+ * Статус автообновления (только чтение).
+ * Синк и разбор ТЗ запускает серверный планировщик — не дублируем POST с клиента.
+ */
 export function BackgroundAutoSync() {
-  const started = useRef(false);
-
-  useEffect(() => {
-    if (started.current) return;
-    started.current = true;
-
-    const tick = () => {
-      void fetch("/api/tenders/auto-sync", { method: "POST" }).catch(() => {});
-    };
-
-    tick();
-    const id = setInterval(tick, CLIENT_POLL_MS);
-    return () => clearInterval(id);
-  }, []);
-
   return null;
 }
 
@@ -54,7 +39,7 @@ export function AutoSyncIndicator() {
     }
 
     void load();
-    const id = setInterval(load, 60_000);
+    const id = setInterval(load, 120_000);
     return () => {
       cancelled = true;
       clearInterval(id);

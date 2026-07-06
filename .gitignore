@@ -23,6 +23,7 @@
 # misc
 .DS_Store
 *.pem
+!certs/*.pem
 
 # debug
 npm-debug.log*
@@ -45,6 +46,9 @@ next-env.local
 
 # кэш ТЗ ~1+ GB — на другом ноуте подтянется заново при разборе документов
 /data/tz-cache/
+/data/job-queues/
+/data/sample-documents/*
+!/data/sample-documents/.gitkeep
 
 # отладочные дампы HTML
 tmp-eis*.html

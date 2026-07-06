@@ -7,12 +7,14 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [unverifiedEmail, setUnverifiedEmail] = useState("");
   const [form, setForm] = useState({ email: "", password: "" });
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
     setError("");
+    setUnverifiedEmail("");
     try {
       const res = await fetch("/api/auth/login", {
         method: "POST",
@@ -21,7 +23,13 @@ export default function LoginPage() {
         body: JSON.stringify(form),
       });
       const data = await res.json();
-      if (!res.ok) { setError(data.error || "Ошибка входа"); return; }
+      if (!res.ok) {
+        if (data.code === "EMAIL_NOT_VERIFIED" && data.email) {
+          setUnverifiedEmail(data.email);
+        }
+        setError(data.error || "Ошибка входа");
+        return;
+      }
       window.location.assign("/dashboard");
     } catch {
       setError("Ошибка соединения с сервером");
@@ -48,6 +56,16 @@ export default function LoginPage() {
           {error && (
             <div className="mb-4 p-3 rounded-lg text-sm text-red-600 border border-red-500/30" style={{ background: "rgba(239,68,68,0.1)" }}>
               {error}
+              {unverifiedEmail && (
+                <p className="mt-2">
+                  <Link
+                    href={`/auth/verify-email?email=${encodeURIComponent(unverifiedEmail)}`}
+                    className="text-blue-600 hover:text-blue-800 font-medium underline"
+                  >
+                    Отправить письмо подтверждения снова
+                  </Link>
+                </p>
+              )}
             </div>
           )}
           <form onSubmit={handleSubmit} className="space-y-5">

@@ -2,44 +2,31 @@
  * Запросы к БД: только реальные закупки, импортированные с zakupki.gov.ru.
  */
 
+import "server-only";
+
 import type { Prisma, PrismaClient } from "@/generated/prisma/client";
 import { isDemoTenderExternalId } from "@/lib/zakupki";
 import type { FeedSortMode } from "@/lib/tenderFeedFilters";
 import { buildCatalogOrderBy } from "@/lib/tenderFeedFilters";
+import { cacheGet, cacheSet, cacheDel } from "@/lib/appCache";
+import {
+  REAL_EIS_TENDER_WHERE,
+  TENDER_FEED_SELECT,
+  TENDER_RANK_POOL,
+  TENDER_FEED_PAGE_SIZE,
+  TENDER_FEED_SCAN_BATCH,
+} from "@/lib/tenderConstants";
 
-export const REAL_EIS_TENDER_WHERE = {
-  status: "active" as const,
-  requirements: { contains: '"importedFromEis":true' },
+export {
+  REAL_EIS_TENDER_WHERE,
+  TENDER_FEED_SELECT,
+  TENDER_RANK_POOL,
+  TENDER_FEED_PAGE_SIZE,
+  TENDER_FEED_SCAN_BATCH,
 };
 
-/** Поля для ленты — без лишних колонок */
-export const TENDER_FEED_SELECT = {
-  id: true,
-  externalId: true,
-  title: true,
-  customerName: true,
-  region: true,
-  price: true,
-  publishedAt: true,
-  deadline: true,
-  category: true,
-  okvedCode: true,
-  requirements: true,
-} as const;
-
-/** Сколько последних закупок ранжируем (полный analyzeMatch только на карточке тендера) */
-export const TENDER_RANK_POOL = {
-  dashboard: 100,
-  matched: 200,
-  profile: 250,
-  catalog: 200,
-} as const;
-
-/** Карточек на экран / за один запрос подгрузки */
-export const TENDER_FEED_PAGE_SIZE = 40;
-
-/** Сколько строк из БД читаем за один проход (matched/profile) */
-export const TENDER_FEED_SCAN_BATCH = 300;
+const COUNT_CACHE_TTL_SEC = 45;
+const COUNT_CACHE_PREFIX = "tender:count:";
 
 export async function fetchTendersForFeed(
   prisma: PrismaClient,
@@ -63,11 +50,38 @@ export async function countActiveEisTenders(
   prisma: PrismaClient,
   where: Prisma.TenderWhereInput = REAL_EIS_TENDER_WHERE
 ) {
-  return prisma.tender.count({ where });
+  return cachedTenderCount(prisma, where);
 }
 
-export function isRealEisTender(requirementsJson: string, externalId: string): boolean {
+function countCacheKey(where: Prisma.TenderWhereInput): string {
+  return COUNT_CACHE_PREFIX + JSON.stringify(where);
+}
+
+async function cachedTenderCount(prisma: PrismaClient, where: Prisma.TenderWhereInput) {
+  const key = countCacheKey(where);
+  const cached = await cacheGet(key);
+  if (cached != null) {
+    const n = parseInt(cached, 10);
+    if (Number.isFinite(n)) return n;
+  }
+  const value = await prisma.tender.count({ where });
+  await cacheSet(key, String(value), COUNT_CACHE_TTL_SEC);
+  return value;
+}
+
+/** Сброс после синка / импорта */
+export async function invalidateTenderCountCache(): Promise<void> {
+  await cacheDel(countCacheKey(REAL_EIS_TENDER_WHERE));
+}
+
+export function isRealEisTender(
+  requirementsJson: string,
+  externalId: string,
+  importedFromEis?: boolean
+): boolean {
   if (isDemoTenderExternalId(externalId)) return false;
+  if (importedFromEis === true) return true;
+  if (importedFromEis === false) return false;
   try {
     const r = JSON.parse(requirementsJson);
     return r.importedFromEis === true && r.isDemo !== true;
@@ -78,17 +92,15 @@ export function isRealEisTender(requirementsJson: string, externalId: string): b
 
 /** Удаляет все тендеры, не загруженные с ЕИС */
 export async function purgeNonEisTenders(prisma: PrismaClient): Promise<number> {
-  const all = await prisma.tender.findMany({
-    select: { id: true, externalId: true, requirements: true },
+  const toDelete = await prisma.tender.findMany({
+    where: { importedFromEis: false },
+    select: { id: true },
   });
-
-  const toDelete = all
-    .filter((t) => !isRealEisTender(t.requirements, t.externalId))
-    .map((t) => t.id);
 
   if (toDelete.length === 0) return 0;
 
-  await prisma.tenderMatch.deleteMany({ where: { tenderId: { in: toDelete } } });
-  await prisma.tender.deleteMany({ where: { id: { in: toDelete } } });
-  return toDelete.length;
+  const ids = toDelete.map((t) => t.id);
+  await prisma.tenderMatch.deleteMany({ where: { tenderId: { in: ids } } });
+  await prisma.tender.deleteMany({ where: { id: { in: ids } } });
+  return ids.length;
 }

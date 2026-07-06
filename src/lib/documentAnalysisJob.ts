@@ -22,13 +22,26 @@ export async function saveDocumentAnalysis(
     }
   }
 
-  if (isRelevant && (analysis.catalogItems?.length ?? 0) > 0) {
+  let resolved = analysis;
+  if (isRelevant && (resolved.catalogItems?.length ?? 0) === 0 && (resolved.products?.length ?? 0) > 0) {
+    resolved = {
+      ...resolved,
+      catalogItems: resolved.products.map((line) => ({
+        name: line,
+        rawText: line,
+        displayText: line,
+        dimensions: {},
+      })),
+    };
+  }
+
+  if (isRelevant && (resolved.catalogItems?.length ?? 0) > 0) {
     try {
-      await syncCatalogProductsToDb(documentId, companyId, analysis.catalogItems);
+      await syncCatalogProductsToDb(documentId, companyId, resolved.catalogItems);
     } catch (syncErr) {
       console.error(`Catalog sync failed for ${documentId}:`, syncErr);
     }
-  } else if (!isRelevant || (analysis.catalogItems?.length ?? 0) === 0) {
+  } else if (!isRelevant || (resolved.catalogItems?.length ?? 0) === 0) {
     try {
       await prisma.catalogProduct.deleteMany({ where: { documentId } });
     } catch {
@@ -43,23 +56,23 @@ export async function saveDocumentAnalysis(
       type: finalType,
       extractedData: JSON.stringify({
         aiProvider,
-        docType: analysis.docType,
-        docTypeLabel: analysis.docTypeLabel,
-        issuedTo: analysis.issuedTo,
-        issuedBy: analysis.issuedBy,
-        number: analysis.number,
-        validFrom: analysis.validFrom,
-        validUntil: analysis.validUntil,
-        summary: analysis.summary,
-        detectedContent: analysis.detectedContent,
-        confidence: analysis.confidence,
+        docType: resolved.docType,
+        docTypeLabel: resolved.docTypeLabel,
+        issuedTo: resolved.issuedTo,
+        issuedBy: resolved.issuedBy,
+        number: resolved.number,
+        validFrom: resolved.validFrom,
+        validUntil: resolved.validUntil,
+        summary: resolved.summary,
+        detectedContent: resolved.detectedContent,
+        confidence: resolved.confidence,
         isRelevant,
         warning,
-        products: analysis.products,
-        catalogItems: analysis.catalogItems ?? [],
-        productCount: analysis.productCount,
-        documentScope: analysis.documentScope,
-        okpd2Code: analysis.okpd2Code,
+        products: resolved.products,
+        catalogItems: resolved.catalogItems ?? [],
+        productCount: resolved.productCount,
+        documentScope: resolved.documentScope,
+        okpd2Code: resolved.okpd2Code,
       }),
       ...(detectedExpiry && !options.existingExpiresAt ? { expiresAt: detectedExpiry } : {}),
       ...(options.expiresAt ? { expiresAt: options.expiresAt } : {}),

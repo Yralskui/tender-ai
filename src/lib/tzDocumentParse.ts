@@ -16,6 +16,7 @@ import { extractTextFromDocxBuffer, detectOfficeFormat, unwrapOfficeArchive } fr
 import { parseTzText, type TzParseResult } from "@/lib/tzParser";
 import { sanitizeTzParseResult, scoreTzParseQuality } from "@/lib/tzSanitizer";
 import { deriveBlockVariantName, resolveBlockProductLabel } from "@/lib/ktruProductVariants";
+import { parseMedicalTextileOozXlsx } from "@/lib/medicalTextileOozParser";
 import { isPlaceholderPositionName, looksLikeProductName } from "@/lib/tzSanitizer";
 
 export interface DocumentParseResult extends TzParseResult {
@@ -130,6 +131,9 @@ export function parseDocumentAttachment(
   if (format === "xlsx" || (isNmckExcelName(effectiveName) && format !== "pdf")) {
     const nmck = parseNmckExcelBuffer(workBuffer);
     if (nmck) return nmck;
+
+    const textileOoz = parseMedicalTextileOozXlsx(workBuffer);
+    if (textileOoz && textileOoz.productSpecs.length > 0) return textileOoz;
 
     const text = extractTextFromXlsxBuffer(workBuffer);
     if (!text) return null;

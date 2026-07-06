@@ -1,8 +1,9 @@
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { REAL_EIS_TENDER_WHERE } from "@/lib/tenderQuery";
 import { getAccessStatus } from "@/lib/subscription";
+import { REAL_EIS_TENDER_WHERE } from "@/lib/tenderQuery";
+import { loadDocumentsForMatching } from "@/lib/documentQuery";
 import Sidebar from "@/components/Sidebar";
 import { TrendingUp, Lock, CheckCircle, ArrowRight } from "lucide-react";
 
@@ -13,11 +14,10 @@ export default async function GrowthPage() {
   const access = getAccessStatus(user);
   if (!access.hasAccess) redirect("/paywall");
 
-  const totalTenders = await prisma.tender.count({ where: REAL_EIS_TENDER_WHERE });
-
-  const documents = user.company
-    ? await prisma.document.findMany({ where: { companyId: user.company.id } })
-    : [];
+  const [totalTenders, documents] = await Promise.all([
+    prisma.tender.count({ where: REAL_EIS_TENDER_WHERE }),
+    user.company ? loadDocumentsForMatching(user.company.id) : Promise.resolve([]),
+  ]);
 
   const hasDocType = (t: string) => documents.some((d) => d.type === t && (() => {
     try { return JSON.parse(d.extractedData || "{}").isRelevant === true; } catch { return false; }

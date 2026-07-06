@@ -12,6 +12,9 @@ model User {
   email         String    @unique
   password      String
   name          String?
+  emailVerifiedAt              DateTime?
+  emailVerificationToken       String?   @unique
+  emailVerificationExpiresAt   DateTime?
   trialEndsAt   DateTime
   isPaid        Boolean   @default(false)
   paidUntil     DateTime?
@@ -21,6 +24,34 @@ model User {
   company       Company?
   notifications Notification[]
   notificationPreference NotificationPreference?
+  promoRedemptions PromoCodeRedemption[]
+}
+
+model PromoCode {
+  id              String   @id @default(cuid())
+  code            String   @unique
+  discountPercent Int
+  note            String?
+  kind            String   @default("support")
+  isActive        Boolean  @default(true)
+  maxTotalUses    Int?
+  expiresAt       DateTime?
+  createdAt       DateTime @default(now())
+  redemptions     PromoCodeRedemption[]
+
+  @@index([isActive])
+}
+
+model PromoCodeRedemption {
+  id          String    @id @default(cuid())
+  promoCodeId String
+  promoCode   PromoCode @relation(fields: [promoCodeId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  redeemedAt  DateTime  @default(now())
+
+  @@unique([promoCodeId, userId])
+  @@index([userId])
 }
 
 model Company {
@@ -114,23 +145,32 @@ model SupplierPriceItem {
 }
 
 model Tender {
-  id              String        @id @default(cuid())
-  externalId      String        @unique
-  title           String
-  description     String?
-  customerName    String
-  region          String
-  price           Float
-  publishedAt     DateTime
-  deadline        DateTime
-  category        String
-  okvedCode       String?
-  requirements    String        @default("{}")
-  status          String        @default("active")
-  sourceUrl       String?
-  createdAt       DateTime      @default(now())
-  matches         TenderMatch[]
-  labelAssignments TenderLabelAssignment[]
+  id                   String        @id @default(cuid())
+  externalId           String        @unique
+  title                String
+  description          String?
+  customerName         String
+  region               String
+  price                Float
+  publishedAt          DateTime
+  deadline             DateTime
+  category             String
+  okvedCode            String?
+  requirements         String        @default("{}")
+  status               String        @default("active")
+  sourceUrl            String?
+  importedFromEis      Boolean       @default(false)
+  tzEnrichmentPending  Boolean       @default(false)
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @default(now()) @updatedAt
+  matches              TenderMatch[]
+  labelAssignments     TenderLabelAssignment[]
+
+  @@index([status])
+  @@index([status, importedFromEis])
+  @@index([status, importedFromEis, deadline])
+  @@index([status, tzEnrichmentPending])
+  @@index([publishedAt])
 }
 
 /** Метка закупки (как в Контур.Закупки) — на уровне компании */
@@ -213,14 +253,16 @@ model Notification {
 }
 
 model NotificationPreference {
-  userId           String   @id
-  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  emailEnabled     Boolean  @default(true)
-  notifyNewTenders Boolean  @default(true)
-  notifyHighMatch  Boolean  @default(true)
-  notifyDeadline   Boolean  @default(true)
-  notifyDocExpiry  Boolean  @default(true)
-  matchThreshold   Int      @default(70)
-  digestFrequency  String   @default("instant")
-  updatedAt        DateTime @updatedAt
+  userId               String   @id
+  user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  emailEnabled         Boolean  @default(true)
+  notifyNewTenders     Boolean  @default(true)
+  notifyHighMatch      Boolean  @default(true)
+  notifyDeadline       Boolean  @default(true)
+  notifyDocExpiry      Boolean  @default(true)
+  matchThreshold       Int      @default(70)
+  notifyTitleKeywords  Boolean  @default(false)
+  titleKeywords        String   @default("")
+  digestFrequency      String   @default("instant")
+  updatedAt            DateTime @updatedAt
 }

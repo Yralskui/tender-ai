@@ -13,7 +13,7 @@ import {
   Shield,
 } from "lucide-react";
 import { analyzeMatch, filterDocsForTenderMatch, mapCompanyDocuments } from "@/lib/matching";
-import { catalogRowsToStructured, loadCompanyCatalogProducts } from "@/lib/catalogProductSync";
+import { loadCompanyCatalogProducts, mergeCompanyCatalogSources } from "@/lib/catalogProductSync";
 import { buildProcurementBundles, blockProcurementBundleMatches } from "@/lib/tzProcurementBundles";
 import { normalizeStoredRequirements } from "@/lib/textNormalize";
 import { resolveTzVolumes, summarizeProcurementVolume } from "@/lib/tzVolumes";
@@ -218,18 +218,16 @@ export default async function TenderPage({
   }
   perf.step("groq AI", { usedAI, aiSkippedReason });
 
-  const catalogProductsFromRows = catalogRows.map((row) => row.displayText || row.name);
-  const catalogProducts =
-    catalogProductsFromRows.length > 0
-      ? catalogProductsFromRows
-      : (ruleAnalysis?.catalogProducts ?? []);
+  const mergedCatalog = mergeCompanyCatalogSources({
+    catalogRows,
+    docsForMatching,
+    fallbackProducts: ruleAnalysis?.catalogProducts,
+  });
+  const catalogProducts = mergedCatalog.catalogProducts;
   const catalogRuSources = ruleAnalysis?.catalogRuSources ?? [];
   const excludedRuCount = ruleAnalysis?.excludedRuCount ?? 0;
 
-  let catalogStructured = docsForMatching.flatMap((d) => d.catalogItems || []);
-  if (catalogStructured.length === 0 && catalogRows.length > 0) {
-    catalogStructured = catalogRowsToStructured(catalogRows);
-  }
+  const catalogStructured = mergedCatalog.catalogStructured;
 
   let procurementBundles = buildProcurementBundles(
     requirements,

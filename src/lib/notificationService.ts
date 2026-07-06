@@ -1,30 +1,31 @@
 import { prisma } from "@/lib/prisma";
 import { getAccessStatus } from "@/lib/subscription";
 import { sendEmail, formatPriceRub } from "@/lib/email";
+import { parseKeywordList } from "@/lib/tenderFeedFilters";
+import {
+  DEFAULT_NOTIFICATION_PREFS,
+  prefsToData,
+  titleMatchesNotificationKeywords,
+  normalizeCoverageThreshold,
+  type NotificationType,
+  type DigestFrequency,
+  type NotificationPreferenceData,
+} from "@/lib/notificationPreferences";
 
-export type NotificationType = "new_tender" | "match_high" | "deadline" | "doc_expiry";
+export type {
+  NotificationType,
+  DigestFrequency,
+  CoverageThreshold,
+  NotificationPreferenceData,
+} from "@/lib/notificationPreferences";
+export {
+  COVERAGE_THRESHOLD_OPTIONS,
+  normalizeCoverageThreshold,
+  titleMatchesNotificationKeywords,
+  prefsToData,
+} from "@/lib/notificationPreferences";
 
-export type DigestFrequency = "instant" | "daily" | "weekly";
-
-export interface NotificationPreferenceData {
-  emailEnabled: boolean;
-  notifyNewTenders: boolean;
-  notifyHighMatch: boolean;
-  notifyDeadline: boolean;
-  notifyDocExpiry: boolean;
-  matchThreshold: number;
-  digestFrequency: DigestFrequency;
-}
-
-const DEFAULT_PREFS: NotificationPreferenceData = {
-  emailEnabled: true,
-  notifyNewTenders: true,
-  notifyHighMatch: true,
-  notifyDeadline: true,
-  notifyDocExpiry: true,
-  matchThreshold: 70,
-  digestFrequency: "instant",
-};
+const DEFAULT_PREFS = DEFAULT_NOTIFICATION_PREFS;
 
 export async function getOrCreatePreferences(userId: string) {
   const existing = await prisma.notificationPreference.findUnique({ where: { userId } });
@@ -52,8 +53,11 @@ function appBaseUrl(): string {
 
 function notificationIcon(type: NotificationType): string {
   switch (type) {
+    case "coverage_high":
     case "match_high":
       return "✅";
+    case "title_keyword":
+      return "🔍";
     case "deadline":
       return "⏰";
     case "doc_expiry":
@@ -86,16 +90,42 @@ interface CreateNotificationInput {
   score?: number;
 }
 
+function isTypeEnabled(type: NotificationType, prefs: NotificationPreferenceData): boolean {
+  switch (type) {
+    case "profile_match":
+    case "new_tender":
+      return prefs.notifyNewTenders;
+    case "coverage_high":
+    case "match_high":
+      return prefs.notifyHighMatch;
+    case "title_keyword":
+      return prefs.notifyTitleKeywords;
+    case "deadline":
+      return prefs.notifyDeadline;
+    case "doc_expiry":
+      return prefs.notifyDocExpiry;
+    default:
+      return false;
+  }
+}
+
 async function hasRecentNotification(
   userId: string,
   type: NotificationType,
   opts: { tenderId?: string; documentId?: string; withinHours?: number }
 ): Promise<boolean> {
   const since = new Date(Date.now() - (opts.withinHours ?? 24) * 60 * 60 * 1000);
+  const types: NotificationType[] =
+    type === "profile_match"
+      ? ["profile_match", "new_tender"]
+      : type === "coverage_high"
+        ? ["coverage_high", "match_high"]
+        : [type];
+
   const found = await prisma.notification.findFirst({
     where: {
       userId,
-      type,
+      type: { in: types },
       createdAt: { gte: since },
       ...(opts.tenderId ? { tenderId: opts.tenderId } : {}),
       ...(opts.documentId ? { documentId: opts.documentId } : {}),
@@ -106,13 +136,7 @@ async function hasRecentNotification(
 
 export async function createNotification(input: CreateNotificationInput) {
   const prefs = await getOrCreatePreferences(input.userId);
-  const typeEnabled =
-    (input.type === "new_tender" && prefs.notifyNewTenders) ||
-    (input.type === "match_high" && prefs.notifyHighMatch) ||
-    (input.type === "deadline" && prefs.notifyDeadline) ||
-    (input.type === "doc_expiry" && prefs.notifyDocExpiry);
-
-  if (!typeEnabled) return null;
+  if (!isTypeEnabled(input.type, prefsToData(prefs))) return null;
 
   const notification = await prisma.notification.create({
     data: {
@@ -156,7 +180,7 @@ export async function sendNotificationEmail(notificationId: string): Promise<boo
     notification.tenderId ? `Открыть: ${tenderLink}` : `Лента: ${appBaseUrl()}/tenders`,
     "",
     "— TenderAI",
-    "Настройки уведомлений: " + `${appBaseUrl()}/notifications`,
+    "Настройки уведомлений: " + `${appBaseUrl()}/profile`,
   ].join("\n");
 
   const sent = await sendEmail({
@@ -240,6 +264,73 @@ export async function sendPendingDigestEmails(frequency: DigestFrequency): Promi
   return sent;
 }
 
+export async function notifyTenderAfterSync(input: {
+  userId: string;
+  tenderId: string;
+  title: string;
+  customerName: string;
+  price: number;
+  deadline: Date;
+  feedScore: number;
+  forecastChance: number;
+  showInFeed: boolean;
+  prefs: NotificationPreferenceData;
+}) {
+  const daysLeft = Math.ceil((input.deadline.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+  const bodySuffix = `${input.customerName}. Цена: ${formatPriceRub(input.price)}. Дедлайн: ${daysLeft} дн.`;
+  const coverageThreshold = normalizeCoverageThreshold(input.prefs.matchThreshold);
+  const profileMatch = input.showInFeed && input.feedScore >= 40;
+  const keywordHit = titleMatchesNotificationKeywords(input.title, input.prefs.titleKeywords);
+  const coverageHit =
+    profileMatch && input.prefs.notifyHighMatch && input.forecastChance >= coverageThreshold;
+
+  type TenderNotifyKind = "coverage_high" | "title_keyword" | "profile_match";
+  let kind: TenderNotifyKind | null = null;
+
+  if (coverageHit) kind = "coverage_high";
+  else if (keywordHit && input.prefs.notifyTitleKeywords) kind = "title_keyword";
+  else if (profileMatch && input.prefs.notifyNewTenders) kind = "profile_match";
+
+  if (!kind) return null;
+  if (await hasRecentNotification(input.userId, kind, { tenderId: input.tenderId, withinHours: 48 })) {
+    return null;
+  }
+
+  if (kind === "coverage_high") {
+    return createNotification({
+      userId: input.userId,
+      type: "coverage_high",
+      title: `Покрытие ТЗ ${Math.round(input.forecastChance)}%`,
+      body: `${input.title}. ${bodySuffix}`,
+      tenderId: input.tenderId,
+      score: input.forecastChance,
+    });
+  }
+
+  if (kind === "title_keyword") {
+    const words = parseKeywordList(input.prefs.titleKeywords);
+    const hit = words.find((w) => input.title.toLowerCase().includes(w)) ?? words[0];
+    return createNotification({
+      userId: input.userId,
+      type: "title_keyword",
+      title: `Слово в названии: «${hit}»`,
+      body: `${input.title}. ${bodySuffix}`,
+      tenderId: input.tenderId,
+      score: input.feedScore > 0 ? input.feedScore : undefined,
+    });
+  }
+
+  return createNotification({
+    userId: input.userId,
+    type: "profile_match",
+    title: "Новый тендер по вашему профилю",
+    body: `${input.title}. ${bodySuffix}`,
+    tenderId: input.tenderId,
+    score: input.feedScore,
+  });
+}
+
+/** @deprecated use notifyTenderAfterSync */
 export async function notifyNewTenderMatch(input: {
   userId: string;
   tenderId: string;
@@ -250,34 +341,12 @@ export async function notifyNewTenderMatch(input: {
   feedScore: number;
   matchThreshold: number;
 }) {
-  if (await hasRecentNotification(input.userId, "new_tender", { tenderId: input.tenderId, withinHours: 48 })) {
-    return null;
-  }
-
-  const daysLeft = Math.ceil((input.deadline.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
-  const body = `${input.customerName}. Цена: ${formatPriceRub(input.price)}. Дедлайн: ${daysLeft} дн.`;
-
-  if (input.feedScore >= input.matchThreshold) {
-    if (await hasRecentNotification(input.userId, "match_high", { tenderId: input.tenderId, withinHours: 48 })) {
-      return null;
-    }
-    return createNotification({
-      userId: input.userId,
-      type: "match_high",
-      title: `Высокое совпадение — ${input.feedScore}%`,
-      body: `${input.title}. ${body}`,
-      tenderId: input.tenderId,
-      score: input.feedScore,
-    });
-  }
-
-  return createNotification({
-    userId: input.userId,
-    type: "new_tender",
-    title: "Новый тендер по вашему профилю",
-    body: `${input.title}. ${body}`,
-    tenderId: input.tenderId,
-    score: input.feedScore,
+  const prefs = await getOrCreatePreferences(input.userId);
+  return notifyTenderAfterSync({
+    ...input,
+    forecastChance: input.feedScore,
+    showInFeed: true,
+    prefs: { ...prefsToData(prefs), matchThreshold: input.matchThreshold },
   });
 }
 

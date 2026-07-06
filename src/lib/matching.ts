@@ -17,10 +17,16 @@ import {
   detectTextileSubTypes,
   familiesAreCompatible,
   familiesForMatchLine,
+  isMedicalLinenSetLine,
+  isSurgicalSuitLine,
   isTechnicalSpec,
   isLabIvdLine,
+  isMedicalConnectorLine,
+  isSurgicalCapLine,
   isTextileProduct,
   normalizeMatchText,
+  sterilityPreferencesConflict,
+  parseSterilityPreference,
   textileSubTypesCompatible,
   type ProductFamily,
   type TextileSubType,
@@ -133,6 +139,73 @@ function normalizeForMatch(s: string): string {
   return normalizeMatchText(s);
 }
 
+/** Убираем шум из выписок ЕРУЛ («наименование медицинского изделия: …») */
+function normalizeCatalogProductLabel(product: string): string {
+  return product
+    .replace(/^наименование\s+медицинского\s+изделия:\s*/i, "")
+    .replace(/^медицинское\s+изделие:\s*/i, "")
+    .trim();
+}
+
+function isUltrasoundProbeCoverLine(text: string): boolean {
+  const n = normalizeMatchText(text);
+  if (!/чехол/i.test(n)) return false;
+  return /датчик|узи|ультразвук|инвазивн|визуализ|трансдьюс/i.test(n);
+}
+
+function isMedicalGownLine(text: string): boolean {
+  const n = normalizeMatchText(text);
+  return /халат/i.test(n) || /сорочк/i.test(n);
+}
+
+function isAntisepticWipeLine(text: string): boolean {
+  const n = normalizeMatchText(text);
+  return /салфет/i.test(n) && /антисепт|спирт|пропит/i.test(n);
+}
+
+function isDryMedicalWipeMatch(product: string): boolean {
+  const n = normalizeMatchText(product);
+  return /салфет/i.test(n) && !/антисепт|спирт/i.test(n);
+}
+
+function isStrongGownMatch(spec: string, product: string): boolean {
+  const s = normalizeMatchText(normalizeCatalogProductLabel(spec));
+  const p = normalizeMatchText(normalizeCatalogProductLabel(product));
+  if (!/халат/i.test(s) || !/халат/i.test(p)) return false;
+  if (/процедурн/i.test(s) && /процедурн/i.test(p)) return true;
+  if (/хирургическ/i.test(s) && /хирургическ/i.test(p)) return true;
+  return s.length >= 14 && p.length >= 14;
+}
+
+function isStrongCapMatch(spec: string, product: string): boolean {
+  const s = normalizeMatchText(normalizeCatalogProductLabel(spec));
+  const p = normalizeMatchText(normalizeCatalogProductLabel(product));
+  if (!isSurgicalCapLine(spec) && !/шапоч|берет|колпак|шарлот/i.test(s)) return false;
+  return isSurgicalCapLine(product) || /шапоч|берет|шарлот|колпак/i.test(p);
+}
+
+function catalogMatchPriority(product: string): number {
+  const p = product.toLowerCase();
+  if (/сертиф|соответств/i.test(p)) return 1;
+  if (/шапоч|берет|рзн|фср|шарлот/i.test(p)) return 3;
+  return 2;
+}
+
+/** Строки номенклатуры — без характеристик и служебных полей КТРУ */
+function primaryNomenclatureLines(searchLines: string[]): string[] {
+  return searchLines.filter((line) => {
+    const t = line.trim();
+    if (t.length < 8) return false;
+    if (isCharacteristicFieldName(t)) return false;
+    if (/^позиция\s*тз\s*№/i.test(t)) return false;
+    if (/^ктру:/i.test(t)) return false;
+    if (/^объём\s+закупки/i.test(t)) return false;
+    const colon = t.indexOf(":");
+    if (colon > 0 && colon < 70 && isCharacteristicFieldName(t.slice(0, colon))) return false;
+    return true;
+  });
+}
+
 const MATCH_STOP_WORDS = new Set([
   "для", "или", "при", "без", "под", "над", "из", "по", "на", "от", "до",
   "комплект", "медицинский", "медицинское", "медицинские", "медицинских",
@@ -160,7 +233,12 @@ function isKitAccessoryWord(w: string): boolean {
 }
 
 function tenderContextFamilies(searchLines: string[]): Set<ProductFamily> {
-  return detectProductFamilies(searchLines.join(" "));
+  const blob = searchLines.join(" ");
+  const families = detectProductFamilies(blob);
+  if (isUltrasoundProbeCoverLine(blob)) {
+    families.delete("medical_electronic");
+  }
+  return families;
 }
 
 function catalogDocFamilies(doc: UploadedDoc): Set<ProductFamily> {
@@ -241,6 +319,9 @@ function tenderSearchLines(
 }
 
 function textileKindAnchorMatch(spec: string, product: string): boolean {
+  if (isMedicalConnectorLine(spec) || isMedicalConnectorLine(product)) return false;
+  if (isSurgicalCapLine(spec) !== isSurgicalCapLine(product)) return false;
+
   const specTypes = detectTextileSubTypes(spec);
   const productTypes = detectTextileSubTypes(product);
   const specific = (s: Set<TextileSubType>) => [...s].filter((t) => t !== "generic_textile");
@@ -260,7 +341,10 @@ function ruDocRelevanceScore(doc: UploadedDoc, searchLines: string[]): number {
   const products = doc.products || [];
   if (products.length === 0 && !doc.summary && !doc.detectedContent) return 0;
 
-  const tenderFamilies = tenderContextFamilies(searchLines);
+  const primaryLines = primaryNomenclatureLines(searchLines);
+  const lines = primaryLines.length > 0 ? primaryLines : searchLines.slice(0, 8);
+
+  const tenderFamilies = tenderContextFamilies(lines);
   const docFamilies = catalogDocFamilies(doc);
   if (!familiesAreCompatible(tenderFamilies, docFamilies)) return 0;
 
@@ -269,14 +353,22 @@ function ruDocRelevanceScore(doc: UploadedDoc, searchLines: string[]): number {
     [doc.summary, doc.detectedContent, doc.name, doc.ruNumber, ...products].filter(Boolean).join(" ")
   );
 
-  for (const line of searchLines) {
-    const catalogMatch = specMatchesCatalog(line, products);
-    if (catalogMatch.matched) score += 12;
-    else if (catalogMatch.partial) score += 2;
+  for (const line of lines.slice(0, 6)) {
+    if (line.length < 8) continue;
+    const m = specMatchesCatalog(line, products);
+    if (m.matched) score += 14;
+    else if (m.partial) score += 6;
 
     const lineWords = significantWords(line);
     const hits = lineWords.filter((w) => blob.split(" ").some((bw) => wordsOverlap(w, bw) || blob.includes(w)));
     if (hits.length >= 2) score += 4;
+
+    for (const product of products) {
+      if (isStrongGownMatch(line, product)) {
+        score += 16;
+        break;
+      }
+    }
   }
 
   return score;
@@ -290,14 +382,32 @@ function selectRelevantCatalogDocs(
   if (searchLines.length === 0) return [];
 
   const tenderFamilies = tenderContextFamilies(searchLines);
+  const primaryLines = primaryNomenclatureLines(searchLines);
 
-  return catalogDocs
-    .map((doc) => ({ doc, score: ruDocRelevanceScore(doc, searchLines) }))
-    .filter((item) => {
-      if (item.score < 8) return false;
-      return familiesAreCompatible(tenderFamilies, catalogDocFamilies(item.doc));
-    })
-    .map((item) => item.doc);
+  const pick = (lines: string[], minScore: number) =>
+    catalogDocs
+      .map((doc) => ({ doc, score: ruDocRelevanceScore(doc, lines) }))
+      .filter((item) => {
+        if (item.score < minScore) return false;
+        return familiesAreCompatible(tenderFamilies, catalogDocFamilies(item.doc));
+      })
+      .map((item) => item.doc);
+
+  let selected = pick(searchLines, 4);
+  if (selected.length === 0 && primaryLines.length > 0) {
+    selected = pick(primaryLines, 4);
+  }
+  if (selected.length === 0 && primaryLines.length > 0) {
+    selected = catalogDocs.filter((doc) => {
+      if (!familiesAreCompatible(tenderFamilies, catalogDocFamilies(doc))) return false;
+      return primaryLines.some((line) => {
+        const m = matchProductToCatalog(line, doc.products || []);
+        return m.status !== "missing";
+      });
+    });
+  }
+
+  return selected;
 }
 
 /** Документы для AI-анализа: корпоративные + только РУ, подходящие к номенклатуре тендера */
@@ -445,6 +555,20 @@ function specMatchesCatalog(
     };
   }
 
+  if (isMedicalConnectorLine(spec)) {
+    const deviceCandidates = products.filter(
+      (p) => !isTextileProduct(p) && !isSurgicalCapLine(p)
+    );
+    if (deviceCandidates.length === 0) {
+      return {
+        matched: false,
+        partial: false,
+        note: "Коннектор/фитинг — в РУ только текстиль (шапочки, халаты и т.п.)",
+        matchedProduct: null,
+      };
+    }
+  }
+
   let candidates = products;
 
   if (isLabIvdLine(spec)) {
@@ -458,6 +582,47 @@ function specMatchesCatalog(
       };
     }
     candidates = labCandidates;
+  }
+
+  if (isMedicalConnectorLine(spec)) {
+    candidates = candidates.filter((p) => !isTextileProduct(p) && !isSurgicalCapLine(p));
+  }
+
+  if (isUltrasoundProbeCoverLine(spec)) {
+    const coverPool = products.filter(
+      (p) => isUltrasoundProbeCoverLine(p) || (/чехол/i.test(normalizeMatchText(p)) && !isMedicalGownLine(p))
+    );
+    if (coverPool.length === 0) {
+      return {
+        matched: false,
+        partial: false,
+        note: "Чехол для датчика УЗИ — в РУ нет чехлов, только другой текстиль",
+        matchedProduct: null,
+      };
+    }
+    candidates = coverPool;
+  }
+
+  if (isAntisepticWipeLine(spec)) {
+    const wipePool = products.filter((p) => /салфет/i.test(normalizeMatchText(p)));
+    if (wipePool.length === 0) {
+      return {
+        matched: false,
+        partial: false,
+        note: "Антисептические салфетки — в каталоге РУ нет салфеток (нужно приложение к РУ)",
+        matchedProduct: null,
+      };
+    }
+    const dryWipe = wipePool.find((p) => isDryMedicalWipeMatch(p));
+    if (dryWipe) {
+      return {
+        matched: false,
+        partial: true,
+        note: "В РУ есть салфетки без антисептика — для антисептических нужно другое РУ",
+        matchedProduct: dryWipe,
+      };
+    }
+    candidates = wipePool;
   }
 
   const specFamilies = familiesForMatchLine(spec);
@@ -489,9 +654,20 @@ function specMatchesCatalog(
 
   let bestPartial: { hits: number; product: string } | null = null;
 
+  if (isSurgicalCapLine(spec) || /шапоч|берет/i.test(specLower)) {
+    candidates = [...candidates].sort((a, b) => catalogMatchPriority(b) - catalogMatchPriority(a));
+  }
+
   for (const product of candidates) {
     const productFamilies = familiesForMatchLine(product);
     if (!familiesAreCompatible(specFamilies, productFamilies)) continue;
+    if (sterilityPreferencesConflict(spec, product)) continue;
+    if (isMedicalLinenSetLine(spec) && isMedicalGownLine(product) && !isMedicalLinenSetLine(product)) {
+      continue;
+    }
+    if (isMedicalGownLine(spec) && isMedicalLinenSetLine(product) && !isMedicalGownLine(product)) {
+      continue;
+    }
     if (
       specKnown.length > 0 &&
       productFamilies.size === 1 &&
@@ -502,6 +678,35 @@ function specMatchesCatalog(
     }
     if (!textileTypesCompatible(spec, product)) continue;
 
+    if (
+      isMedicalConnectorLine(spec) &&
+      (isSurgicalCapLine(product) || (isTextileProduct(product) && !isMedicalConnectorLine(product)))
+    ) {
+      continue;
+    }
+    if (isSurgicalCapLine(spec) && isMedicalConnectorLine(product)) continue;
+
+    if (isUltrasoundProbeCoverLine(spec) && isMedicalGownLine(product)) continue;
+    if (isMedicalGownLine(spec) && isUltrasoundProbeCoverLine(product)) continue;
+
+    if (isStrongGownMatch(spec, product) && !isMedicalLinenSetLine(spec)) {
+      return applyDimensionCheck(spec, product, structured, {
+        matched: true,
+        partial: false,
+        note: `Совпадение с «${formatMatchProductLabel(normalizeCatalogProductLabel(product))}»`,
+        matchedProduct: product,
+      });
+    }
+
+    if (isStrongCapMatch(spec, product)) {
+      return applyDimensionCheck(spec, product, structured, {
+        matched: true,
+        partial: false,
+        note: `Совпадение с «${formatMatchProductLabel(normalizeCatalogProductLabel(product))}»`,
+        matchedProduct: product,
+      });
+    }
+
     if (textileKindAnchorMatch(spec, product)) {
       return applyDimensionCheck(spec, product, structured, {
         matched: true,
@@ -511,7 +716,7 @@ function specMatchesCatalog(
       });
     }
 
-    const productLower = normalizeForMatch(product);
+    const productLower = normalizeForMatch(normalizeCatalogProductLabel(product));
     if (
       /игл\w*/i.test(specLower) &&
       !/игл\w*/i.test(productLower) &&
@@ -579,6 +784,26 @@ function specMatchesCatalog(
         matchedProduct: null,
       };
     }
+    if (sterilityPreferencesConflict(spec, bestPartial.product)) {
+      return {
+        matched: false,
+        partial: false,
+        note: "Стерильность в ТЗ и РУ не совпадает (стерильное ≠ нестерильное)",
+        matchedProduct: null,
+      };
+    }
+    if (
+      isMedicalLinenSetLine(spec) &&
+      isMedicalGownLine(bestPartial.product) &&
+      !isMedicalLinenSetLine(bestPartial.product)
+    ) {
+      return {
+        matched: false,
+        partial: false,
+        note: "Набор белья (костюм) — в РУ только халат, не комплект белья",
+        matchedProduct: null,
+      };
+    }
     return applyDimensionCheck(spec, bestPartial.product, structured, {
       matched: false,
       partial: true,
@@ -590,15 +815,58 @@ function specMatchesCatalog(
   return { matched: false, partial: false, note: "Нет в каталоге РУ", matchedProduct: null };
 }
 
+function finalizeCatalogMatch(
+  spec: string,
+  result: { matched: boolean; partial: boolean; note: string; matchedProduct: string | null }
+): { matched: boolean; partial: boolean; note: string; matchedProduct: string | null } {
+  if (!result.matchedProduct) return result;
+  if (sterilityPreferencesConflict(spec, result.matchedProduct)) {
+    return {
+      matched: false,
+      partial: false,
+      note: "Стерильность в ТЗ и РУ не совпадает (стерильное ≠ нестерильное)",
+      matchedProduct: null,
+    };
+  }
+  const specS = parseSterilityPreference(spec);
+  const prodS = parseSterilityPreference(result.matchedProduct);
+  if (result.matched && specS !== "unknown" && prodS === "unknown") {
+    return {
+      matched: false,
+      partial: true,
+      matchedProduct: result.matchedProduct,
+      note:
+        specS === "non_sterile"
+          ? "ТЗ требует нестерильное изделие — проверьте стерильность в приложении к РУ"
+          : "ТЗ требует стерильное изделие — проверьте стерильность в приложении к РУ",
+    };
+  }
+  return result;
+}
+
 export function matchProductToCatalog(
   requestedName: string,
   catalogProducts: string[],
   structured?: StructuredCatalogItem[]
 ): { status: "match" | "partial" | "missing"; matchedProduct: string | null; note: string } {
-  const m = specMatchesCatalog(requestedName, catalogProducts, structured);
+  const m = finalizeCatalogMatch(requestedName, specMatchesCatalog(requestedName, catalogProducts, structured));
   if (m.matched) return { status: "match", matchedProduct: m.matchedProduct, note: m.note };
   if (m.partial) return { status: "partial", matchedProduct: m.matchedProduct, note: m.note };
   return { status: "missing", matchedProduct: null, note: m.note };
+}
+
+/** Характеристика описывает другое изделие, чем родительская позиция ТЗ */
+function isCrossDeviceCharacteristic(field: string, parentProduct: string): boolean {
+  const f = field.toLowerCase();
+  const p = parentProduct.toLowerCase();
+  if (/катетер/i.test(f) && /коннектор/i.test(p) && !/катетер/i.test(p)) return true;
+  if (/коннектор/i.test(f) && /катетер/i.test(p) && !/коннектор/i.test(p)) return true;
+  if ((/аспирац|ирригац/i.test(f) || /отверст/i.test(f)) && /коннектор/i.test(p) && !/катетер/i.test(p)) {
+    return true;
+  }
+  if (/шапоч|берет/i.test(f) && /коннектор|катетер|luer|люер/i.test(p)) return true;
+  if (/коннектор|катетер/i.test(f) && /шапоч|берет/i.test(p) && !/коннектор|катетер/i.test(p)) return true;
+  return false;
 }
 
 /** Сверка одной характеристики ТЗ с позицией из РУ (не поиск изделия по названию поля). */
@@ -610,8 +878,49 @@ export function matchTzCharacteristic(
   structured?: StructuredCatalogItem[]
 ): { status: "match" | "partial" | "missing"; matchedProduct: string | null; note: string } {
   const fullSpec = `${field}: ${value}`;
+  const valueNorm = value.toLowerCase().trim();
+  const fieldNorm = normalizeMatchText(field);
+  const parentNorm = normalizeMatchText(parentProduct);
+
+  if (isCrossDeviceCharacteristic(field, parentProduct)) {
+    return {
+      status: "missing",
+      matchedProduct: null,
+      note: "Параметр относится к другому изделию в закупке",
+    };
+  }
+
+  if (/состав\s+костюма|рубашк.*брюк/i.test(field.toLowerCase()) && isMedicalGownLine(parentProduct)) {
+    return {
+      status: "missing",
+      matchedProduct: null,
+      note: "ТЗ требует костюм (рубашка + брюки), а не халат",
+    };
+  }
+
   const parentMatch = matchProductToCatalog(parentProduct, catalogProducts, structured);
   const targetProduct = parentMatch.matchedProduct;
+
+  if (/^(соответствие|наличие)$/i.test(valueNorm)) {
+    const isDuplicateProductLine =
+      fieldNorm === parentNorm ||
+      (fieldNorm.length > 20 && parentNorm.includes(fieldNorm)) ||
+      (parentNorm.length > 20 && fieldNorm.includes(parentNorm));
+    if (isDuplicateProductLine) {
+      if (parentMatch.status === "match") {
+        return {
+          status: "match",
+          matchedProduct: parentMatch.matchedProduct,
+          note: "Позиция подтверждена по РУ",
+        };
+      }
+      return {
+        status: parentMatch.status,
+        matchedProduct: parentMatch.matchedProduct,
+        note: parentMatch.note,
+      };
+    }
+  }
 
   if (!targetProduct) {
     if (parentMatch.status === "partial") {
@@ -647,7 +956,14 @@ export function matchTzCharacteristic(
     }
   }
 
-  if (/стерильн/i.test(fieldLower) || /стерильн/i.test(valueLower)) {
+  if (/стерильн/i.test(fieldLower) || /стерильн/i.test(valueLower) || /стерильн/i.test(parentNorm)) {
+    if (sterilityPreferencesConflict(`${parentProduct} ${field} ${value}`, targetProduct)) {
+      return {
+        status: "missing",
+        matchedProduct: targetProduct,
+        note: "Стерильность в РУ не совпадает с ТЗ (стерильное ≠ нестерильное)",
+      };
+    }
     if (/стерильн/i.test(catalogText) || /стерильн/i.test(targetProduct.toLowerCase())) {
       return { status: "match", matchedProduct: targetProduct, note: "Стерильность подтверждается РУ" };
     }
@@ -659,6 +975,26 @@ export function matchTzCharacteristic(
     const hit = keywords.find((k) => valueLower.includes(k) && (catalogText.includes(k) || targetProduct.toLowerCase().includes(k)));
     if (hit) {
       return { status: "match", matchedProduct: targetProduct, note: `Материал совпадает: ${hit}` };
+    }
+  }
+
+  if (/^тип$/i.test(fieldNorm.trim()) && /берет|колпак|шарлот/i.test(valueLower)) {
+    if (isSurgicalCapLine(parentProduct) || /шапоч|берет|колпак/i.test(catalogText)) {
+      return {
+        status: "partial",
+        matchedProduct: targetProduct,
+        note: "Тип шапочки — сверьте берет/колпак в приложении к РУ",
+      };
+    }
+  }
+
+  if (/фиксац|резинк|завязк/i.test(fieldLower) && /резинк|завязк|тесьм/i.test(valueLower)) {
+    if (isSurgicalCapLine(parentProduct) || /шапоч|берет/i.test(catalogText)) {
+      return {
+        status: "partial",
+        matchedProduct: targetProduct,
+        note: "Способ фиксации — сверьте с приложением к РУ",
+      };
     }
   }
 
@@ -1036,19 +1372,37 @@ export function analyzeMatch(
     const allCatalogFamilies = catalogFamiliesFromProducts(
       catalogDocs.flatMap((d) => d.products || [])
     );
-    nomenclatureMismatch = true;
+    const fullCatalogProducts = catalogDocs.flatMap((d) => d.products || []);
+    const probeLines = [
+      ...tzProducts,
+      tenderTitle.replace(/^поставка\s+/i, "").trim(),
+    ].filter((l) => l && l.length >= 8);
+    const hasProductHit = probeLines.some((line) => {
+      const m = matchProductToCatalog(line, fullCatalogProducts, catalogStructured);
+      return m.status !== "missing";
+    });
+
     if (!familiesAreCompatible(tenderFamilies, allCatalogFamilies)) {
+      nomenclatureMismatch = true;
       blockers.push(
         `Предмет закупки: ${describeTenderFamilies(tenderFamilies)}. Ваши РУ: ${describeCatalogFamilies(allCatalogFamilies)} — разные виды изделий`
       );
-    } else {
+      score -= 25;
+      score = Math.min(score, 38);
+      missingDocs.push("РУ на изделия из данного тендера");
+    } else if (!hasProductHit) {
+      nomenclatureMismatch = true;
       warnings.push(
         "Загруженные РУ не покрывают номенклатуру этого тендера — для участия нужно РУ на соответствующие изделия"
       );
+      missingDocs.push("РУ на изделия из данного тендера");
+      score -= 25;
+      score = Math.min(score, 38);
+    } else {
+      warnings.push(
+        "Сверка по каталогу РУ: позиция найдена, но характеристики ТЗ нужно проверить вручную"
+      );
     }
-    missingDocs.push("РУ на изделия из данного тендера");
-    score -= 25;
-    score = Math.min(score, 38);
   } else if (medicalTender) {
     const hasSingleCert = effectiveDocs.some(
       (d) => d.effectiveType === "certificate" && d.documentScope === "single_product"

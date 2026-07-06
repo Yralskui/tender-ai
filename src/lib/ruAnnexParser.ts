@@ -1,6 +1,5 @@
 /**
  * Извлечение номенклатуры из приложения к РУ (ФСР/РЗН).
- * Типичный формат: «1. Халат хирургический … длина 120-140, 1 шт.»
  */
 
 import {
@@ -12,10 +11,17 @@ import {
 export type { StructuredCatalogItem };
 
 const SKIP_LINE =
-  /^(лист\s+\d|приложени|регистрационн|удостоверен|федеральн|служб|заместитель|росздрав|№\s*фср|м\.?\s*п\.?|подпись|\d{7}$)/i;
+  /^(лист\s+\d|приложени|регистрационн|удостоверен|федеральн|служб|заместитель|росздрав|№\s*фср|м\.?\s*п\.?|подпись|\d{7}$|--\s*\d+\s+of)/i;
 
 const PRODUCT_SIGNAL =
-  /халат|бель[её]|простын|наволоч|салфет|бахил|хирург|комплект|рулон|фартук|майка|колпач|шапоч|пеленк|пелёнк|покрывал|салфет|мешок|чехол|сорочк|костюм|туалет|одежд|салфетк|марл|фартук/i;
+  /халат|бель[её]|простын|наволоч|салфет|бахил|хирург|комплект|рулон|фартук|майка|колпач|шапоч|берет|берёт|пеленк|пелёнк|покрывал|сорочк|костюм|туалет|одежд|марл|чехол|мешок|плёнк|пленк|покрыти|перчат|маск|калоп/i;
+
+function splitTableLikeLine(line: string): string[] {
+  return line
+    .split(/\s{2,}|\t/)
+    .map((c) => c.trim())
+    .filter((c) => c.length >= 8);
+}
 
 function normalizeRuProductLine(line: string): string {
   return line
@@ -24,53 +30,84 @@ function normalizeRuProductLine(line: string): string {
     .trim();
 }
 
-/** Строка — позиция из приложения, а не служебный текст */
 function looksLikeRuAnnexProduct(line: string): boolean {
-  if (line.length < 12 || line.length > 240) return false;
+  if (line.length < 8 || line.length > 320) return false;
   if (SKIP_LINE.test(line)) return false;
   if (!PRODUCT_SIGNAL.test(line)) return false;
   if (/^длина\s+\d/i.test(line) && !PRODUCT_SIGNAL.test(line.slice(0, 30))) return false;
   return true;
 }
 
-/**
- * Парсит нумерованные строки приложения к РУ.
- * Сохраняет размеры: «длина 70-320, ширина 70-160».
- */
+function parseNumberedLine(line: string): string | null {
+  const numbered = line.match(/^(?:\d+|[IVXLCА-ЯЁ]{1,5})[\.)]\s+(.+)$/i);
+  if (!numbered) return null;
+  let body = numbered[1].trim().replace(/\s*;\s*$/, "");
+  if (!looksLikeRuAnnexProduct(body)) return null;
+  return normalizeRuProductLine(body);
+}
+
+function parseBulletLine(line: string): string | null {
+  const bullet = line.match(/^[-•*]\s+(.+)$/);
+  if (!bullet) return null;
+  const body = bullet[1].trim();
+  if (!looksLikeRuAnnexProduct(body)) return null;
+  return normalizeRuProductLine(body);
+}
+
+function parsePlainProductLine(line: string): string | null {
+  const trimmed = line.trim();
+  if (!looksLikeRuAnnexProduct(trimmed)) return null;
+  if (/^\d[\d\s.,/-]{5,}$/.test(trimmed)) return null;
+  return normalizeRuProductLine(trimmed);
+}
+
+function isAnnexContext(text: string): boolean {
+  if (text.length > 400 && /медицинск|издели|рзн|фср|простын|комплект|бахил|шапоч/i.test(text)) {
+    return true;
+  }
+  return (
+    /приложени.*регистрационн|регистрационн.*удостоверен.*медицинск/i.test(text) ||
+    /№\s*фср\s*\d{4}/i.test(text) ||
+    /рзн\s*\d{4}/i.test(text) ||
+    /наименование.*медицинск/i.test(text) ||
+    /перечень.*издели/i.test(text)
+  );
+}
+
+/** Парсит строки приложения к РУ (нумерованные, маркеры, plain OCR). */
 export function extractRuAnnexProducts(text: string): string[] {
   if (!text || text.length < 80) return [];
 
-  const isAnnex =
-    /приложени.*регистрационн|регистрационн.*удостоверен.*медицинск/i.test(text) ||
-    /№\s*фср\s*\d{4}/i.test(text);
-
-  if (!isAnnex && !/наименование.*медицинск/i.test(text)) {
-    return [];
-  }
-
-  const out: string[] = [];
+  const annexCtx = isAnnexContext(text);
   const lines = text.replace(/\r/g, "").split("\n");
+  const out: string[] = [];
 
   for (const raw of lines) {
     const line = raw.trim();
-    if (line.length < 10) continue;
+    if (line.length < 8) continue;
 
-    const numbered = line.match(/^(?:\d+|[IVXLCА-ЯЁ]{1,5})\.\s+(.+)$/i);
-    if (!numbered) continue;
+    const parsed = parseNumberedLine(line) || parseBulletLine(line);
+    if (parsed) {
+      out.push(parsed);
+      continue;
+    }
 
-    let body = numbered[1].trim();
-    body = body.replace(/\s*;\s*$/, "");
-
-    if (!looksLikeRuAnnexProduct(body)) continue;
-
-    const normalized = normalizeRuProductLine(body);
-    if (normalized.length >= 10) out.push(normalized);
+    if (annexCtx) {
+      const plain = parsePlainProductLine(line);
+      if (plain) {
+        out.push(plain);
+        continue;
+      }
+      for (const cell of splitTableLikeLine(line)) {
+        const cellParsed = parsePlainProductLine(cell);
+        if (cellParsed) out.push(cellParsed);
+      }
+    }
   }
 
-  return [...new Set(out)].slice(0, 80);
+  return [...new Set(out)].slice(0, 120);
 }
 
-/** Структурированный каталог: имя + размеры в мм для сверки с ТЗ. */
 export function extractRuCatalogItems(text: string): StructuredCatalogItem[] {
   const lines = extractRuAnnexProducts(text);
   const items = lines.map(structuredItemFromRuLine);
@@ -85,24 +122,25 @@ export function extractRuCatalogItems(text: string): StructuredCatalogItem[] {
   return unique;
 }
 
+export function mergeStructuredCatalogItems(...groups: StructuredCatalogItem[][]): StructuredCatalogItem[] {
+  const merged: StructuredCatalogItem[] = [];
+  const keys = new Set<string>();
+  for (const group of groups) {
+    for (const item of group) {
+      const key = item.rawText.toLowerCase();
+      if (keys.has(key)) continue;
+      keys.add(key);
+      merged.push(item);
+    }
+  }
+  return merged;
+}
+
 export function mergeRuCatalogItems(
   existing: StructuredCatalogItem[],
   annexText: string
 ): StructuredCatalogItem[] {
-  const annex = extractRuCatalogItems(annexText);
-  if (annex.length === 0) return existing;
-
-  const merged = [...existing];
-  const keys = new Set(existing.map((p) => p.rawText.toLowerCase()));
-
-  for (const item of annex) {
-    const key = item.rawText.toLowerCase();
-    if (!keys.has(key)) {
-      merged.push(item);
-      keys.add(key);
-    }
-  }
-  return merged;
+  return mergeStructuredCatalogItems(existing, extractRuCatalogItems(annexText));
 }
 
 export function mergeRuCatalogProducts(existing: string[], annexText: string): string[] {
@@ -123,7 +161,6 @@ export function mergeRuCatalogProducts(existing: string[], annexText: string): s
   return merged;
 }
 
-/** Строки для отображения: с размерами в мм, если есть структура. */
 export function catalogItemsToDisplayStrings(items: StructuredCatalogItem[]): string[] {
   return items.map((i) => i.displayText || buildCatalogDisplayText(i.name, i.dimensions));
 }

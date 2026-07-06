@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
+import { loadDocumentsForMatching } from "@/lib/documentQuery";
 import { getAccessStatus } from "@/lib/subscription";
 import {
   computeCatalogHashFromDocuments,
@@ -17,7 +17,7 @@ export async function GET() {
   const access = getAccessStatus(user);
   if (!access.hasAccess) return NextResponse.json({ error: "paywall" }, { status: 403 });
 
-  const documents = await prisma.document.findMany({ where: { companyId: user.company.id } });
+  const documents = await loadDocumentsForMatching(user.company.id);
   const catalogHash = computeCatalogHashFromDocuments(user.company, documents);
   const status = await getCompanyFeedCacheStatus(user.company.id, catalogHash);
 
@@ -37,14 +37,14 @@ export async function POST(req: Request) {
 
   if (background) {
     scheduleCompanyFeedCacheRebuild(user.company.id, { full: true });
-    const documents = await prisma.document.findMany({ where: { companyId: user.company.id } });
+    const documents = await loadDocumentsForMatching(user.company.id);
     const catalogHash = computeCatalogHashFromDocuments(user.company, documents);
     const status = await getCompanyFeedCacheStatus(user.company.id, catalogHash);
     return NextResponse.json({ started: true, ...status });
   }
 
   const result = await rebuildCompanyFeedCache(user.company.id, { full: true });
-  const documents = await prisma.document.findMany({ where: { companyId: user.company.id } });
+  const documents = await loadDocumentsForMatching(user.company.id);
   const catalogHash = computeCatalogHashFromDocuments(user.company, documents);
   const status = await getCompanyFeedCacheStatus(user.company.id, catalogHash);
   return NextResponse.json({ started: false, processed: result.processed, ...status });

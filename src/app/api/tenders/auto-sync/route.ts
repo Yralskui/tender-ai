@@ -9,6 +9,7 @@ import { getCurrentUser } from "@/lib/auth";
 import { verifyCronSecret } from "@/lib/cronAuth";
 import { runAutoSyncCycle, getAutoSyncStatus } from "@/lib/autoSyncPipeline";
 import { formatAutoSyncAgo } from "@/lib/autoSyncState";
+import { backgroundJobsInNext } from "@/lib/runtimeConfig";
 
 export const maxDuration = 300;
 
@@ -37,6 +38,15 @@ export async function POST(req: NextRequest) {
   const force = searchParams.get("force") === "true" || isCron;
   const mode = searchParams.get("mode") === "smart" ? "smart" : "catalog";
   const limit = parseInt(searchParams.get("limit") || (mode === "catalog" ? "800" : "220"), 10);
+
+  if (!backgroundJobsInNext() && !isCron && !force) {
+    return NextResponse.json({
+      success: true,
+      skipped: true,
+      reason: "worker",
+      message: "Фоновые задачи выполняет worker (npm run worker). Ручной синк: ?force=true",
+    });
+  }
 
   try {
     const result = await runAutoSyncCycle({

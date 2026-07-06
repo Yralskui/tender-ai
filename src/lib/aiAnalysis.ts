@@ -19,8 +19,10 @@ import {
   mergeRuCatalogProducts,
   extractRuAnnexProducts,
   extractRuCatalogItems,
+  mergeStructuredCatalogItems,
   catalogItemsToDisplayStrings,
 } from "./ruAnnexParser";
+import { parseRuFilenameCatalog, sanitizeRuCatalogProducts } from "./ruFilenameCatalog";
 import type { StructuredCatalogItem } from "./productDimensions";
 import { structuredItemFromRuLine } from "./productDimensions";
 
@@ -33,7 +35,7 @@ const GROQ_VISION_MODEL =
   process.env.GROQ_VISION_MODEL || "meta-llama/llama-4-scout-17b-16e-instruct";
 
 const PDF_VISION_MAX_PAGES = 8;
-const PDF_VISION_MAX_PAGES_RU = 12;
+const PDF_VISION_MAX_PAGES_RU = Number(process.env.PDF_VISION_MAX_PAGES_RU) || 24;
 
 export type DocTypeCode =
   | "license_fsb"
@@ -146,7 +148,48 @@ const EMPTY_PRODUCT_FIELDS = {
 };
 
 function catalogItemsFromProducts(products: string[]): StructuredCatalogItem[] {
-  return products.map(structuredItemFromRuLine);
+  return sanitizeRuCatalogProducts(products).map(structuredItemFromRuLine);
+}
+
+/** PDF «текст» только маркеры страниц (-- 1 of 26 --) — считаем сканом */
+function isPdfTextMeaningful(text: string | null): boolean {
+  if (!text || text.length < 80) return false;
+  const stripped = text
+    .replace(/--\s*\d+\s+of\s+\d+\s*--/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (stripped.length < 80) return false;
+  if (/^[\d\s:.\-/of]+$/i.test(stripped)) return false;
+  return true;
+}
+
+function ensureCatalogItems(analysis: DocumentAnalysis): DocumentAnalysis {
+  if ((analysis.catalogItems?.length ?? 0) > 0) return analysis;
+  const products = sanitizeRuCatalogProducts(analysis.products || []);
+  if (products.length === 0) return analysis;
+  const catalogItems = catalogItemsFromProducts(products);
+  return {
+    ...analysis,
+    products,
+    catalogItems,
+    productCount: catalogItems.length,
+    documentScope: analysis.documentScope === "corporate" ? "catalog" : analysis.documentScope,
+  };
+}
+
+function ruFilenameFallbackWarning(
+  catalogCount: number,
+  opts: { fromVision?: boolean; fromPdfText?: boolean } = {}
+): string | null {
+  if (catalogCount >= 5) return null;
+  if (catalogCount >= 3 && (opts.fromVision || opts.fromPdfText)) return null;
+  if (catalogCount === 0) {
+    return "Скан не прочитан — загрузите PDF со всеми страницами приложения (перечень изделий).";
+  }
+  if (catalogCount >= 2) {
+    return "Каталог частично восстановлен. Для точных размеров загрузите чёткий PDF всех страниц приложения к РУ.";
+  }
+  return "Каталог восстановлен из названия файла. Для точных размеров загрузите PDF со всеми страницами приложения к РУ.";
 }
 
 function parseProductsFromRaw(raw: Record<string, unknown>): string[] {
@@ -205,28 +248,7 @@ function extractFilenameHints(fileName: string): FilenameHints {
   const lower = fileName.toLowerCase();
   const rzMatch = fileName.match(/рзн[\s№#:_-]*(\d{4}[-_/\s]?\d+)/i);
   const fsrMatch = fileName.match(/фср[\s№#:]*(\d{4}[\s/\-_]*\d+)/i);
-  const productsFromName: string[] = [];
-
-  const productPart = fileName
-    .replace(/\.(pdf|jpg|png|jpeg|webp)$/i, "")
-    .replace(/^загрузить\s*:\s*/i, "")
-    .replace(/^.*\d{4}[.\-/]\d{2}[.\-/]\d{2}\s*$/i, "")
-    .replace(/^.*рзн[\s№#:_-]*\d{4}[-_/\s]?\d+\s*(от\s*\d{2}[.\-/]\d{2}[.\-/]\d{2,4}\s*)?/i, "")
-    .replace(/^.*фср[\s№#:]*\d{4}[\s/\-_]*\d+\s*/i, "")
-    .replace(/^.*сертификат[^.]*\s*(к\s*)?/i, "")
-    .replace(/^ру\s*/i, "")
-    .replace(/\s*от\s*\d{2}[.\-/]\d{2}[.\-/]\d{2,4}\s*$/i, "")
-    .replace(/\s*\(\d+\)\s*$/i, "")
-    .trim();
-
-  if (productPart.length > 5 && !/^загрузить/i.test(productPart)) {
-    productsFromName.push(productPart.replace(/[+]/g, ", "));
-  }
-  if (/комплект|к-ты/i.test(lower)) productsFromName.push("комплекты медицинские");
-  if (/хирург/i.test(lower)) productsFromName.push("комплекты одежды и белья хирургические");
-  if (/бель/i.test(lower)) productsFromName.push("комплект белья хирургический");
-  if (/рулон/i.test(lower)) productsFromName.push("рулоны");
-  if (/стер/i.test(lower)) productsFromName.push("стерильные изделия");
+  const productsFromName = parseRuFilenameCatalog(fileName);
 
   const isCert = /сертификат|ст-1|декларац|соответств/i.test(lower);
   const isRu =
@@ -241,7 +263,7 @@ function extractFilenameHints(fileName: string): FilenameHints {
     likelyCertificate: isCert,
     rzNumber: rzMatch ? `РЗН ${rzMatch[1].replace(/\s+/g, "-")}` : null,
     fsrNumber: fsrMatch ? `ФСР ${fsrMatch[1].replace(/\s+/g, "/")}` : null,
-    productsFromName: [...new Set(productsFromName)],
+    productsFromName: sanitizeRuCatalogProducts(productsFromName),
   };
 }
 
@@ -250,27 +272,31 @@ function buildAnalysisFromFilenameHints(hints: FilenameHints, fileName: string, 
 
   if (hints.likelyMedicalRu) {
     const number = hints.rzNumber || hints.fsrNumber || "";
-    const productHint = hints.productsFromName.length
-      ? ` Изделия: ${hints.productsFromName.slice(0, 3).join("; ")}.`
+    const catalog = sanitizeRuCatalogProducts(hints.productsFromName);
+    const catalogItems = catalogItemsFromProducts(catalog);
+    const productHint = catalog.length
+      ? ` Изделия: ${catalog.slice(0, 5).join("; ")}.`
       : "";
-    return withProductDefaults({
-      docType: "medical_ru",
-      docTypeLabel: DOC_TYPE_LABELS.medical_ru,
-      issuedTo: "",
-      issuedBy: "Росздравнадзор",
-      number,
-      validFrom: null,
-      validUntil: null,
-      summary: `Регистрационное удостоверение${number ? ` ${number}` : ""} на медицинские изделия.${productHint}`,
-      detectedContent: `РУ медизделий: ${fileName.slice(0, 100)}`,
-      isRelevantForTenders: true,
-      warning:
-        "AI не смог полностью прочитать скан — документ принят по реквизитам из названия. Загрузите PDF со всеми страницами приложения (перечень изделий) для точного матчинга с ТЗ.",
-      confidence: 72,
-      documentScope: "catalog",
-      products: hints.productsFromName,
-      productCount: hints.productsFromName.length,
-    });
+    return ensureCatalogItems(
+      withProductDefaults({
+        docType: "medical_ru",
+        docTypeLabel: DOC_TYPE_LABELS.medical_ru,
+        issuedTo: "",
+        issuedBy: "Росздравнадзор",
+        number,
+        validFrom: null,
+        validUntil: null,
+        summary: `Регистрационное удостоверение${number ? ` ${number}` : ""} на медицинские изделия.${productHint}`,
+        detectedContent: `РУ медизделий: ${fileName.slice(0, 100)}`,
+        isRelevantForTenders: true,
+        warning: ruFilenameFallbackWarning(catalog.length, {}),
+        confidence: catalog.length > 0 ? 78 : 72,
+        documentScope: "catalog",
+        products: catalog,
+        catalogItems,
+        productCount: catalog.length,
+      })
+    );
   }
 
   return withProductDefaults({
@@ -294,53 +320,226 @@ function buildAnalysisFromFilenameHints(hints: FilenameHints, fileName: string, 
   });
 }
 
-function mergePageAnalyses(pages: DocumentAnalysis[], fileName: string, hints: FilenameHints): DocumentAnalysis {
+function mergeFilenameCatalogIntoAnalysis(
+  analysis: DocumentAnalysis,
+  hints: FilenameHints
+): DocumentAnalysis {
+  if (!hints.likelyMedicalRu || hints.productsFromName.length === 0) return analysis;
+  const nameItems = catalogItemsFromProducts(hints.productsFromName);
+  const existing = analysis.catalogItems?.length
+    ? analysis.catalogItems
+    : catalogItemsFromProducts(analysis.products || []);
+  const catalogItems = mergeStructuredCatalogItems(nameItems, existing);
+  if (catalogItems.length <= (analysis.catalogItems?.length ?? analysis.products.length)) return analysis;
+  const products = catalogItemsToDisplayStrings(catalogItems);
+  return ensureCatalogItems({
+    ...analysis,
+    docType: "medical_ru",
+    isRelevantForTenders: true,
+    documentScope: "catalog",
+    products,
+    catalogItems,
+    productCount: catalogItems.length,
+    warning: ruFilenameFallbackWarning(catalogItems.length, {}),
+    confidence: Math.max(analysis.confidence, catalogItems.length >= 3 ? 85 : analysis.confidence),
+  });
+}
+
+function mergePageAnalyses(
+  pages: DocumentAnalysis[],
+  fileName: string,
+  hints: FilenameHints,
+  pdfText?: string | null
+): DocumentAnalysis {
   const relevant = pages.filter((p) => p.isRelevantForTenders);
   const pool = relevant.length > 0 ? relevant : pages;
-  const base = pool.reduce((best, cur) => (cur.confidence > best.confidence ? cur : best), pool[0]);
+  const base = pool.length
+    ? pool.reduce((best, cur) => (cur.confidence > best.confidence ? cur : best), pool[0])
+    : null;
 
+  const fromNameItems = catalogItemsFromProducts(hints.productsFromName);
+  const pdfAnnexItems = pdfText ? extractRuCatalogItems(pdfText) : [];
   const allProducts = [...new Set(pool.flatMap((p) => p.products).filter(Boolean))];
-  const pageText = pool.map((p) => p.detectedContent).join("\n");
-  const mergedProducts = mergeRuCatalogProducts(
-    allProducts.length > 0 ? allProducts : hints.productsFromName,
-    pageText
+  const pageText = [
+    pdfText || "",
+    ...pool.map((p) => [p.detectedContent, ...(p.products || [])].filter(Boolean).join("\n")),
+  ].join("\n");
+  const mergedProducts = sanitizeRuCatalogProducts(
+    mergeRuCatalogProducts(
+      allProducts.length > 0 ? allProducts : hints.productsFromName,
+      pageText
+    )
   );
   const annexItems = extractRuCatalogItems(pageText);
-  const catalogItems =
-    annexItems.length > 0
-      ? annexItems
-      : catalogItemsFromProducts(mergedProducts);
+  const fromProducts = catalogItemsFromProducts(mergedProducts);
+  const pageCatalogItems = pool.flatMap((p) => p.catalogItems || []);
+  const catalogItems = mergeStructuredCatalogItems(
+    fromNameItems,
+    pdfAnnexItems,
+    annexItems,
+    fromProducts,
+    pageCatalogItems
+  );
+  const fromVision = pages.some((p) => /AI Vision/i.test(p.detectedContent || ""));
+  const fromPdfText = pdfAnnexItems.length > 0 || annexItems.length > 0;
 
-  let docType = base.docType;
+  let docType: DocTypeCode = base?.docType || "medical_ru";
   if (docType === "irrelevant" || docType === "other") {
     if (hints.likelyMedicalRu) docType = "medical_ru";
     else if (hints.likelyCertificate) docType = "certificate";
   }
 
   const documentScope: DocumentScope =
-    mergedProducts.length > 1 || isCatalogCertificateText(pool.map((p) => p.detectedContent).join(" "))
-      ? "catalog"
-      : base.documentScope;
+    catalogItems.length > 1 || mergedProducts.length > 1 ? "catalog" : base?.documentScope || "catalog";
 
-  const number = base.number || hints.rzNumber || hints.fsrNumber || "";
+  const number = base?.number || hints.rzNumber || hints.fsrNumber || "";
+  const productLines = catalogItems.length ? catalogItemsToDisplayStrings(catalogItems) : mergedProducts;
 
-  return postValidateAnalysis(
-    {
-      ...base,
-      docType,
-      docTypeLabel: DOC_TYPE_LABELS[docType],
-      isRelevantForTenders: docType !== "irrelevant",
-      products: catalogItems.length ? catalogItemsToDisplayStrings(catalogItems) : mergedProducts,
-      catalogItems,
-      productCount: catalogItems.length || mergedProducts.length,
-      documentScope,
+  const fallbackBase =
+    base ||
+    buildAnalysisFromFilenameHints(hints, fileName, "medical_ru") ||
+    withProductDefaults({
+      docType: "medical_ru",
+      docTypeLabel: DOC_TYPE_LABELS.medical_ru,
+      issuedTo: "",
+      issuedBy: "Росздравнадзор",
       number,
-      detectedContent: base.detectedContent || `Проанализирован скан PDF, ${pages.length} стр. (AI Vision)`,
-      summary: base.summary || `Документ проанализирован по ${pages.length} страницам.`,
-    },
-    [base.detectedContent, base.summary, ...mergedProducts, fileName].join(" "),
-    fileName
+      validFrom: null,
+      validUntil: null,
+      summary: "Регистрационное удостоверение на медицинские изделия.",
+      detectedContent: fileName.slice(0, 120),
+      isRelevantForTenders: true,
+      warning: null,
+      confidence: 70,
+      documentScope: "catalog",
+      products: [],
+      catalogItems: [],
+      productCount: 0,
+      okpd2Code: null,
+    });
+
+  return ensureCatalogItems(
+    postValidateAnalysis(
+      {
+        ...fallbackBase,
+        docType,
+        docTypeLabel: DOC_TYPE_LABELS[docType],
+        isRelevantForTenders: docType !== "irrelevant",
+        products: productLines,
+        catalogItems,
+        productCount: catalogItems.length || productLines.length,
+        documentScope,
+        number,
+        issuedBy: fallbackBase.issuedBy || "Росздравнадзор",
+        detectedContent:
+          base?.detectedContent ||
+          (fromVision
+            ? `Проанализирован скан PDF, ${pages.length} стр. (AI Vision)`
+            : fallbackBase.detectedContent),
+        summary:
+          catalogItems.length >= 3
+            ? `Регистрационное удостоверение${number ? ` ${number}` : ""}. Каталог: ${catalogItems.length} поз.`
+            : fallbackBase.summary || `Документ проанализирован по ${pages.length} страницам.`,
+        warning:
+          docType === "medical_ru"
+            ? ruFilenameFallbackWarning(catalogItems.length || productLines.length, { fromVision, fromPdfText })
+            : fallbackBase.warning,
+        confidence: Math.max(
+          fallbackBase.confidence,
+          catalogItems.length >= 8 ? 92 : catalogItems.length >= 3 ? 88 : 78
+        ),
+      },
+      [pageText, fileName].join(" "),
+      fileName
+    )
   );
+}
+
+async function analyzeMedicalRuPdf(
+  filePath: string,
+  fileName: string,
+  userType: string,
+  hints: FilenameHints,
+  extractedText: string | null
+): Promise<DocumentAnalysis> {
+  let textAnalysis: DocumentAnalysis | null = null;
+  const pdfAnnexCount = extractedText ? extractRuCatalogItems(extractedText).length : 0;
+
+  if (extractedText && isPdfTextMeaningful(extractedText)) {
+    if (process.env.GROQ_API_KEY && extractedText.length >= 120 && pdfAnnexCount < 5) {
+      textAnalysis = await analyzeTextWithGroq(extractedText, fileName, userType);
+    }
+    if (!textAnalysis?.products?.length) {
+      textAnalysis = applyMedicalRuOverrides(
+        postValidateAnalysis(strictHeuristic(extractedText, fileName, userType), extractedText, fileName),
+        extractedText
+      );
+    }
+  }
+
+  let visionResult: DocumentAnalysis | null = null;
+  if (process.env.GROQ_API_KEY) {
+    visionResult = await analyzePdfScanWithVision(
+      filePath,
+      fileName,
+      userType,
+      PDF_VISION_MAX_PAGES_RU,
+      extractedText
+    );
+  }
+
+  const fromName = buildAnalysisFromFilenameHints(hints, fileName, userType);
+  const nameItems = catalogItemsFromProducts(hints.productsFromName);
+  const textItems = textAnalysis?.catalogItems?.length
+    ? textAnalysis.catalogItems
+    : textAnalysis?.products?.length
+      ? catalogItemsFromProducts(textAnalysis.products)
+      : [];
+  const visionItems = visionResult?.catalogItems?.length
+    ? visionResult.catalogItems
+    : visionResult?.products?.length
+      ? catalogItemsFromProducts(visionResult.products)
+      : [];
+  const pdfItems = extractedText ? extractRuCatalogItems(extractedText) : [];
+
+  const catalogItems = mergeStructuredCatalogItems(nameItems, pdfItems, textItems, visionItems);
+  const products = catalogItems.length
+    ? catalogItemsToDisplayStrings(catalogItems)
+    : sanitizeRuCatalogProducts([
+        ...(visionResult?.products || []),
+        ...(textAnalysis?.products || []),
+        ...hints.productsFromName,
+      ]);
+
+  const base = visionResult || textAnalysis || fromName;
+  if (!base) {
+    return (
+      fromName ||
+      analyzeDocumentFallback(fileName, userType, extractedText)
+    );
+  }
+
+  const fromVision = Boolean(visionResult && /AI Vision/i.test(visionResult.detectedContent || ""));
+  const fromPdfText = pdfItems.length > 0;
+
+  return ensureCatalogItems({
+    ...base,
+    docType: "medical_ru",
+    docTypeLabel: DOC_TYPE_LABELS.medical_ru,
+    isRelevantForTenders: true,
+    documentScope: "catalog",
+    number: base.number || hints.rzNumber || hints.fsrNumber || "",
+    issuedBy: base.issuedBy || "Росздравнадзор",
+    products,
+    catalogItems,
+    productCount: catalogItems.length || products.length,
+    summary:
+      products.length >= 3
+        ? `Регистрационное удостоверение ${base.number || hints.rzNumber || hints.fsrNumber || ""}. Каталог: ${products.length} поз.`
+        : base.summary,
+    warning: ruFilenameFallbackWarning(catalogItems.length || products.length, { fromVision, fromPdfText }),
+    confidence: Math.max(base.confidence, products.length >= 8 ? 92 : products.length >= 3 ? 88 : 78),
+  });
 }
 
 function extractMainProductFromRuText(text: string): string | null {
@@ -354,9 +553,11 @@ function applyMedicalRuOverrides(analysis: DocumentAnalysis, text: string): Docu
   const mainProduct = extractMainProductFromRuText(text);
   const annexProducts = extractRuAnnexProducts(text);
   const annexItems = extractRuCatalogItems(text);
-  const baseProducts = mergeRuCatalogProducts(
-    analysis.products.length ? analysis.products : mainProduct ? [mainProduct] : [],
-    text
+  const baseProducts = sanitizeRuCatalogProducts(
+    mergeRuCatalogProducts(
+      analysis.products.length ? analysis.products : mainProduct ? [mainProduct] : [],
+      text
+    )
   );
   const catalogItems =
     annexItems.length > 0
@@ -374,7 +575,7 @@ function applyMedicalRuOverrides(analysis: DocumentAnalysis, text: string): Docu
         ? ` В каталоге ${products.length} позиций из приложения (размеры переведены в мм для сверки с ТЗ).`
         : "";
 
-  return {
+  return ensureCatalogItems({
     ...analysis,
     docType: "medical_ru",
     docTypeLabel: DOC_TYPE_LABELS.medical_ru,
@@ -385,12 +586,14 @@ function applyMedicalRuOverrides(analysis: DocumentAnalysis, text: string): Docu
     productCount: products.length,
     issuedBy: analysis.issuedBy || (/росздравнадзор/i.test(text) ? "Росздравнадзор" : analysis.issuedBy),
     warning:
-      annexProducts.length === 0 && hasAnnex
-        ? "Приложение к РУ распознано не полностью — нажмите «Перепроверить» или загрузите чёткий PDF всех страниц."
-        : analysis.warning,
+      annexProducts.length === 0 && hasAnnex && products.length <= 3
+        ? ruFilenameFallbackWarning(products.length, { fromPdfText: annexProducts.length > 0 })
+        : annexProducts.length > 0
+          ? null
+          : analysis.warning,
     summary: (analysis.summary || "Регистрационное удостоверение на медицинские изделия.") + annexNote,
     confidence: Math.max(analysis.confidence, annexProducts.length > 5 ? 92 : 88),
-  };
+  });
 }
 
 function normalizeDocTypeCode(raw: string | undefined, userType: string): DocTypeCode {
@@ -469,7 +672,7 @@ function buildAnalysisFromGroq(
       "Сертификат подтверждает только одну позицию. Для медицинских тендеров загрузите РУ Росздравнадзора с приложением — там перечень всех изделий поставщика.";
   }
 
-  return {
+  return ensureCatalogItems({
     docType: code,
     docTypeLabel: String(raw.docTypeLabel || DOC_TYPE_LABELS[code]),
     issuedTo: String(raw.issuedTo || ""),
@@ -487,7 +690,7 @@ function buildAnalysisFromGroq(
     productCount,
     documentScope,
     okpd2Code,
-  };
+  });
 }
 
 const OFFICIAL_MARKERS = [
@@ -778,7 +981,8 @@ async function analyzePdfScanWithVision(
   filePath: string,
   fileName: string,
   userType: string,
-  maxPages = PDF_VISION_MAX_PAGES
+  maxPages = PDF_VISION_MAX_PAGES,
+  pdfText?: string | null
 ): Promise<DocumentAnalysis | null> {
   if (!process.env.GROQ_API_KEY) return null;
   const hints = extractFilenameHints(fileName);
@@ -791,25 +995,29 @@ async function analyzePdfScanWithVision(
 
     const pageAnalyses: DocumentAnalysis[] = [];
     const totalPages = rendered.length;
-    const batchSize = 3;
 
-    for (let i = 0; i < rendered.length; i += batchSize) {
-      const batch = rendered.slice(i, i + batchSize);
-      const batchResults = await Promise.all(
-        batch.map((page) =>
-          analyzePageImageWithVision(page.dataUrl, fileName, userType, page.pageNumber, totalPages)
-        )
-      );
-      for (const pageAnalysis of batchResults) {
-        if (pageAnalysis) pageAnalyses.push(pageAnalysis);
+    for (const page of rendered) {
+      let pageAnalysis: DocumentAnalysis | null = null;
+      for (let attempt = 0; attempt < 2 && !pageAnalysis; attempt++) {
+        pageAnalysis = await analyzePageImageWithVision(
+          page.dataUrl,
+          fileName,
+          userType,
+          page.pageNumber,
+          totalPages
+        );
+        if (!pageAnalysis && attempt === 0) {
+          await new Promise((r) => setTimeout(r, 1200));
+        }
       }
+      if (pageAnalysis) pageAnalyses.push(pageAnalysis);
     }
 
     if (pageAnalyses.length === 0) {
       return buildAnalysisFromFilenameHints(hints, fileName, userType);
     }
 
-    return mergePageAnalyses(pageAnalyses, fileName, hints);
+    return mergePageAnalyses(pageAnalyses, fileName, hints, pdfText);
   } catch (e) {
     console.error("PDF vision error:", e);
     return buildAnalysisFromFilenameHints(hints, fileName, userType);
@@ -1119,13 +1327,17 @@ async function analyzeDocumentQuick(
     if (isMedicalRuText(text) || hints.likelyMedicalRu || docType === "medical_ru") {
       if (text.length >= 120 && process.env.GROQ_API_KEY) {
         const groqResult = await analyzeTextWithGroq(text, fileName, docType);
-        if (groqResult?.isRelevantForTenders) return groqResult;
+        if (groqResult?.isRelevantForTenders) {
+          return mergeFilenameCatalogIntoAnalysis(groqResult, hints);
+        }
       }
       const heuristic = applyMedicalRuOverrides(
         postValidateAnalysis(strictHeuristic(text, fileName, docType), text, fileName),
         text
       );
-      if (heuristic.isRelevantForTenders) return heuristic;
+      if (heuristic.isRelevantForTenders) {
+        return mergeFilenameCatalogIntoAnalysis(heuristic, hints);
+      }
     }
 
     if (text.length >= 400 && process.env.GROQ_API_KEY) {
@@ -1142,6 +1354,46 @@ async function analyzeDocumentQuick(
   if (fromName) return fromName;
 
   return analyzeDocumentFallback(fileName, docType, text);
+}
+
+/** Длина извлекаемого текста PDF — 0/null = скан без текстового слоя */
+export async function probePdfTextLength(fileUrl: string): Promise<number | null> {
+  const ext = fileUrl.split(".").pop()?.toLowerCase();
+  if (ext !== "pdf") return null;
+  const filePath = path.join(process.cwd(), "public", fileUrl.replace(/^\//, ""));
+  const text = await extractTextFromPdf(filePath);
+  return text?.length ?? 0;
+}
+
+/** Нужен полный разбор (Vision по страницам), а не только quick */
+export function shouldRunFullDocumentAnalysis(
+  analysis: DocumentAnalysis,
+  options: { ext: string; userDocType: string; pdfTextLength: number | null }
+): boolean {
+  const { ext, userDocType, pdfTextLength } = options;
+  if (ext !== "pdf") return !analysis.isRelevantForTenders;
+
+  const catalogCount = Math.max(analysis.catalogItems?.length ?? 0, analysis.products?.length ?? 0);
+  const ruOrCert =
+    analysis.docType === "medical_ru" ||
+    analysis.docType === "certificate" ||
+    userDocType === "medical_ru" ||
+    userDocType === "certificate";
+  const filenameOnly =
+    Boolean(analysis.warning?.includes("не смог полностью прочитать")) ||
+    Boolean(analysis.warning?.includes("по реквизитам из названия")) ||
+    Boolean(analysis.warning?.includes("восстановлен из названия")) ||
+    Boolean(analysis.detectedContent?.startsWith("РУ медизделий:"));
+  const thinCatalog = catalogCount <= 8;
+  const scanned = pdfTextLength === null || pdfTextLength < 500;
+
+  if (!analysis.isRelevantForTenders) return true;
+  if (ruOrCert && (scanned || thinCatalog || filenameOnly)) return true;
+  return false;
+}
+
+export function isPricelistFileName(fileName: string): boolean {
+  return /прайс|price\s*list|спец\.?\s*цена|прайс-описание|прайс\s*лист/i.test(fileName);
 }
 
 export async function analyzeDocument(
@@ -1174,16 +1426,23 @@ export async function analyzeDocument(
     if (gibberishReason) return gibberishAnalysis(extractedText, fileName, gibberishReason);
   }
 
-  const hasMeaningfulText = extractedText && extractedText.length >= 400;
-  const isScannedPdf = isPdf && (!extractedText || extractedText.length < 400);
+  const hasMeaningfulText = isPdfTextMeaningful(extractedText);
+  const isScannedPdf = isPdf && !hasMeaningfulText;
+  const isMedicalRuDoc =
+    hints.likelyMedicalRu || hints.likelyCertificate || docType === "medical_ru";
+
+  if (isPdf && isMedicalRuDoc && !hints.likelyCertificate) {
+    return analyzeMedicalRuPdf(filePath, fileName, docType, hints, extractedText);
+  }
+
   const visionMaxPages =
     hints.likelyMedicalRu || hints.likelyCertificate || docType === "medical_ru"
       ? PDF_VISION_MAX_PAGES_RU
       : PDF_VISION_MAX_PAGES;
 
-  // Сканы и РУ — сначала Vision по всем страницам (текстовый слой часто пустой/битый)
-  if (isPdf && process.env.GROQ_API_KEY && (isScannedPdf || hints.likelyMedicalRu || hints.likelyCertificate)) {
-    const scanResult = await analyzePdfScanWithVision(filePath, fileName, docType, visionMaxPages);
+  // Сканы и сертификаты — Vision по страницам
+  if (isPdf && process.env.GROQ_API_KEY && (isScannedPdf || hints.likelyCertificate)) {
+    const scanResult = await analyzePdfScanWithVision(filePath, fileName, docType, visionMaxPages, extractedText);
     if (scanResult?.isRelevantForTenders) return scanResult;
     if (scanResult && scanResult.docType === "medical_ru") return scanResult;
   }

@@ -94,12 +94,24 @@ function extractKtruFromRow(mainHtml: string): string {
 }
 
 function extractProductNameFromRow(mainHtml: string, ktruIndex: Map<string, string>): string {
+  for (const cell of extractTableCellsFromMainRow(mainHtml)) {
+    if (/^\d{2}\.\d{2}\.\d{2}\.\d{3}/.test(cell)) continue;
+    if (/роисходящ|иностранн|еаэс|запрет|ограничен/i.test(cell)) continue;
+    const med = cell.match(
+      /^([А-Яа-яЁё][^.(]{8,180}?)\s*\(является медицинским изделием\)/i
+    );
+    if (med) {
+      const name = repairFragmentedRussian(med[1]).replace(/\s+/g, " ").trim();
+      if (looksLikeProductName(name) && !isPlaceholderPositionName(name)) return name;
+    }
+  }
+
   const beforeMed = mainHtml.match(
-    /([А-Яа-яЁё][^<(]{8,220}?)\s*&nbsp;\(является медицинским изделием\)/i
+    />([А-Яа-яЁё][^<]{8,180}?)\s*(?:&nbsp;|\u00a0)\s*\(является медицинским изделием\)/i
   );
   if (beforeMed) {
     const name = repairFragmentedRussian(stripHtml(beforeMed[1])).replace(/\s+/g, " ").trim();
-    if (looksLikeProductName(name)) return name;
+    if (looksLikeProductName(name) && !isPlaceholderPositionName(name)) return name;
   }
 
   const ktru = extractKtruFromRow(mainHtml);

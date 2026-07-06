@@ -5,10 +5,11 @@
 
 import { matchProductToCatalog, matchTzCharacteristic } from "@/lib/matching";
 import type { StructuredCatalogItem } from "@/lib/productDimensions";
-import { isCharacteristicFieldName, looksLikeProductName, isUsefulTzCharacteristic, titleConflictsWithTzProducts } from "@/lib/tzSanitizer";
+import { isCharacteristicFieldName, looksLikeProductName, isUsefulTzCharacteristic, titleConflictsWithTzProducts, isPlaceholderPositionName } from "@/lib/tzSanitizer";
 import { isKtruCode, normalizeDisplayText, normalizeTzSpecText, parseTzPositionName, parseTzPositionNumber, TZ_POSITION_NUM_RE } from "@/lib/textNormalize";
 import { resolveProcurementProductNames } from "@/lib/tzNomenclature";
 import { resolveTzVolumes, type TzVolume } from "@/lib/tzVolumes";
+import { buildKtruNameMapFromSpecs, resolveTzProductLabel } from "@/lib/tzProductLabelResolve";
 import type { NomenclatureMatchRow } from "@/lib/tenderPresentation";
 
 export interface TzCharacteristic {
@@ -49,6 +50,26 @@ function pushCharacteristic(
 ) {
   const parts = parseCharParts(charLabel);
   if (!isUsefulTzCharacteristic(spec, parts.field || charLabel, parts.value)) return;
+
+  if (!parts.field && /^(да|нет)$/i.test((parts.value || "").trim())) return;
+
+  const dedupeKey = `${(parts.field || charLabel).toLowerCase()}|${(parts.value || "").toLowerCase()}`;
+  if (bundle.characteristics.some((c) => `${(c.field || c.label).toLowerCase()}|${(c.value || "").toLowerCase()}` === dedupeKey)) {
+    return;
+  }
+
+  const fieldNorm = normalizeTzSpecText(parts.field || charLabel).toLowerCase();
+  const bundleNorm = bundle.name.toLowerCase().replace(/\s+/g, " ").trim();
+  const valNorm = (parts.value || "").toLowerCase().trim();
+  if (
+    /^(соответствие|наличие)$/i.test(valNorm) &&
+    (fieldNorm === bundleNorm ||
+      (fieldNorm.length > 25 && bundleNorm.includes(fieldNorm)) ||
+      (bundleNorm.length > 25 && fieldNorm.includes(bundleNorm)))
+  ) {
+    return;
+  }
+
   const m = matchTzCharacteristic(
     parts.field || charLabel,
     parts.value || charLabel,
@@ -174,6 +195,16 @@ export function buildProcurementBundles(
   let position = 0;
   const orphanSpecs: Array<{ field: string; value: string; raw: string }> = [];
   const attachedOrphans = new Set<string>();
+  const ktruNameMap = buildKtruNameMapFromSpecs(specs);
+
+  const labelFor = (name: string, ktruCode?: string, linePos?: string) =>
+    resolveTzProductLabel({
+      name,
+      ktruCode,
+      position: linePos,
+      tenderTitle,
+      ktruNameMap,
+    });
 
   const bundleKey = (name: string, linePos?: string) =>
     `${linePos || ""}|${name}`.toLowerCase();
@@ -230,6 +261,7 @@ export function buildProcurementBundles(
           });
       let bundleName = vol?.name && !isKtruCode(vol.name) ? vol.name : displayName;
       if (isKtruCode(bundleName)) bundleName = displayName;
+      bundleName = labelFor(bundleName, vol?.ktruCode || ktruCode, linePos || vol?.position);
       const m = matchProductToCatalog(bundleName, catalogProducts, catalogStructured);
       b = {
         id: `bundle-${displayPos}`,
@@ -275,7 +307,7 @@ export function buildProcurementBundles(
 
     const positionName = parseTzPositionName(spec);
     if (positionName) {
-      currentName = positionName;
+      currentName = labelFor(positionName, undefined, currentLinePosition || undefined);
       if (looksLikeProductName(currentName) || currentName.length >= 12) {
         ensureBundle(currentName, undefined, currentLinePosition || undefined);
       }
@@ -291,12 +323,19 @@ export function buildProcurementBundles(
     }
 
     const split = splitSpecLine(spec);
-    if (split && (looksLikeProductName(split.product) || split.product.length >= 12) && !isCharacteristicFieldName(split.product)) {
+    if (
+      split &&
+      (looksLikeProductName(split.product) ||
+        split.product.length >= 12 ||
+        isPlaceholderPositionName(split.product)) &&
+      !isCharacteristicFieldName(split.product)
+    ) {
+      const productLabel = labelFor(split.product, undefined, currentLinePosition || undefined);
       const b =
         (currentLinePosition ? findBundleByPosition(currentLinePosition) : undefined) ||
-        ensureBundle(split.product, undefined, currentLinePosition || undefined);
+        ensureBundle(productLabel, undefined, currentLinePosition || undefined);
       pushCharacteristic(b, spec, split.charLabel, catalogProducts, catalogStructured);
-      currentName = split.product;
+      currentName = productLabel;
       continue;
     }
 
@@ -304,7 +343,13 @@ export function buildProcurementBundles(
     if (colonChar) {
       const field = colonChar[1].trim();
       const value = colonChar[2].trim();
-      if (isCharacteristicFieldName(field) && !spec.includes(" — ")) {
+      const isCharField =
+        isCharacteristicFieldName(field) ||
+        (!looksLikeProductName(field) &&
+          !isPlaceholderPositionName(field) &&
+          field.length >= 3 &&
+          field.length <= 120);
+      if (isCharField && !spec.includes(" — ")) {
         if (isUsefulTzCharacteristic(spec, field, value)) {
           const key = `${field.toLowerCase()}|${value.toLowerCase()}`;
           if (!attachedOrphans.has(key)) {
@@ -358,11 +403,16 @@ export function buildProcurementBundles(
   if (orphanSpecs.length > 0 && bundles.length > 0) {
     const primary = bundles[0];
     const existing = new Set(
-      primary.characteristics.map((c) => (c.field || c.label).toLowerCase())
+      primary.characteristics.map(
+        (c) => `${(c.field || c.label).toLowerCase()}|${(c.value || "").toLowerCase()}`
+      )
     );
     for (const o of orphanSpecs) {
-      if (existing.has(o.field.toLowerCase())) continue;
-      existing.add(o.field.toLowerCase());
+      if (!o.field?.trim()) continue;
+      if (!o.field.trim() && /^(да|нет)$/i.test(o.value)) continue;
+      const key = `${o.field.toLowerCase()}|${o.value.toLowerCase()}`;
+      if (existing.has(key)) continue;
+      existing.add(key);
       const m = matchTzCharacteristic(
         o.field,
         o.value,

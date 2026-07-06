@@ -83,8 +83,7 @@ export default function RegisterPage() {
         return;
       }
       sessionStorage.removeItem(DRAFT_KEY);
-      // Полный переход — cookie из Set-Cookie гарантированно подхватится (router.push иногда гоняется)
-      window.location.assign(data.redirect || "/onboarding");
+      window.location.assign(data.redirect || `/auth/verify-email?email=${encodeURIComponent(form.email)}`);
     } catch {
       setError("Ошибка соединения с сервером. Проверьте, что сайт открыт по тому же адресу (IP:3000), не localhost с другого устройства.");
     } finally {
@@ -103,7 +102,7 @@ export default function RegisterPage() {
             <span className="font-bold text-xl text-slate-900">TenderAI</span>
           </Link>
           <h1 className="text-2xl font-bold text-slate-900 mb-2">Начать бесплатно</h1>
-          <p className="text-slate-600">7 дней пробного доступа</p>
+          <p className="text-slate-600">7 дней пробного доступа после подтверждения email</p>
         </div>
 
         <div className="rounded-2xl border border-slate-200 p-8 app-card">

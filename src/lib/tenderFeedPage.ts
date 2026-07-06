@@ -30,6 +30,7 @@ import {
   ensureCompanyFeedCache,
   getCompanyFeedCacheStatus,
   isFeedCacheRebuildActive,
+  rerankTenderForCompanyCache,
 } from "@/lib/tenderFeedCache";
 import { createPerfTimer } from "@/lib/perfLog";
 import {
@@ -38,8 +39,13 @@ import {
   DEFAULT_FEED_FILTERS,
   type TenderFeedFilters,
 } from "@/lib/tenderFeedFilters";
+import type {
+  PageFeedMode,
+  TenderFeedCardItem,
+  TenderFeedPageResult,
+} from "@/lib/tenderFeedTypes";
 
-export type PageFeedMode = TenderFeedMode | "tagged";
+export type { PageFeedMode, TenderFeedCardItem, TenderFeedPageResult } from "@/lib/tenderFeedTypes";
 
 type FeedRow = {
   id: string;
@@ -54,37 +60,6 @@ type FeedRow = {
   okvedCode: string | null;
   requirements: string;
 };
-
-export interface TenderFeedCardItem {
-  id: string;
-  externalId: string;
-  title: string;
-  customerName: string;
-  region: string;
-  category: string;
-  price: number;
-  deadline: string;
-  displayScore: number | null;
-  hasCatalog: boolean;
-  ruMatched: number;
-  ruPartial: number;
-  ruTotal: number;
-  isEis: boolean;
-  hasTzFile: boolean;
-  labelNames: string[];
-  labelColors: string[];
-}
-
-export interface TenderFeedPageResult {
-  items: TenderFeedCardItem[];
-  nextOffset: number;
-  hasMore: boolean;
-  totalInDb: number;
-  statsShown: number;
-  statsHiddenNoRu?: number;
-  cacheBuilding?: boolean;
-  cacheMatchedCount?: number;
-}
 
 interface FeedContext {
   okvedCodes: string[];
@@ -259,10 +234,35 @@ async function loadCachedFeedBatch(
   ]);
   perf.step("tenderMatch query", { poolTotal, rows: rows.length, offset, limit });
 
-  const cards = await attachLabels(
-    companyId,
-    rows.map((row) => matchRowToCard(row.tender, row, ctx.hasCatalog))
-  );
+  const cardRows: Omit<TenderFeedCardItem, "labelNames" | "labelColors">[] = [];
+  for (const row of rows) {
+    const tender = row.tender as FeedRow & { updatedAt?: Date };
+    const stale =
+      companyId &&
+      (!row.computedAt || (tender.updatedAt && tender.updatedAt > row.computedAt));
+    if (stale && companyId) {
+      const fresh = await rerankTenderForCompanyCache(companyId, { ...tender, id: tender.id });
+      if (fresh) {
+        cardRows.push(
+          matchRowToCard(
+            tender,
+            {
+              feedScore: fresh.feedScore,
+              forecastChance: fresh.forecastChance,
+              ruMatched: fresh.ruMatched,
+              ruPartial: fresh.ruPartial,
+              ruTotal: fresh.ruTotal,
+            },
+            ctx.hasCatalog
+          )
+        );
+        continue;
+      }
+    }
+    cardRows.push(matchRowToCard(tender, row, ctx.hasCatalog));
+  }
+
+  const cards = await attachLabels(companyId, cardRows);
   perf.step("attachLabels", { cards: cards.length });
 
   const nextOffset = offset + rows.length;
@@ -348,7 +348,7 @@ async function loadTaggedBatch(
 
   if (ids.length === 0) {
     const totalInDb = await countActiveEisTenders(prisma);
-    return { items: [], nextOffset: offset, hasMore: false, totalInDb, statsShown: 0 };
+    return { items: [], nextOffset: offset, hasMore: false, totalInDb, statsShown: 0, taggedTotal: 0 };
   }
 
   const tenderWhere = buildFeedTenderWhere(ctx.filters, { allowExpired: true });
@@ -368,8 +368,9 @@ async function loadTaggedBatch(
     }),
   ]);
 
-  const { tenders, stats } = rankAndFilterTendersForFeed(
-    filterTendersForVertical(rows, ctx.okvedCodes),
+  // Помеченные вручную — не отсекаем вертикальным фильтром (мед/фарм)
+  const { tenders } = rankAndFilterTendersForFeed(
+    rows,
     ctx.companyFocus,
     ctx.documents,
     ctx.companyProfile,
@@ -387,22 +388,23 @@ async function loadTaggedBatch(
     nextOffset,
     hasMore: nextOffset < poolTotal,
     totalInDb: await countActiveEisTenders(prisma),
-    statsShown: stats.shown,
+    statsShown: cards.length,
+    taggedTotal: poolTotal,
   };
 }
 
-async function loadCatalogBatch(
+async function loadCatalogBatchLive(
   ctx: FeedContext,
   offset: number,
-  limit: number
+  limit: number,
+  tenderWhere: ReturnType<typeof buildFeedTenderWhere>,
+  totalInDb: number
 ): Promise<TenderFeedPageResult> {
-  const perf = createPerfTimer("feed:catalog");
-  const tenderWhere = buildFeedTenderWhere(ctx.filters, { allowExpired: false });
+  const perf = createPerfTimer("feed:catalog:live");
   const rows = await fetchTendersForFeed(prisma, limit, offset, {
     where: tenderWhere,
     sort: ctx.filters.sort,
   });
-  const totalInDb = await countActiveEisTenders(prisma, tenderWhere);
   perf.step("fetchTendersForFeed", { rows: rows.length, totalInDb });
 
   if (rows.length === 0) {
@@ -423,7 +425,6 @@ async function loadCatalogBatch(
     ctx.companyId,
     tenders.map((t) => rankedToCard(t, ctx.hasCatalog))
   );
-  perf.step("attachLabels");
 
   const nextOffset = offset + rows.length;
   perf.end("готово", { items: cards.length });
@@ -433,6 +434,95 @@ async function loadCatalogBatch(
     hasMore: nextOffset < totalInDb,
     totalInDb,
     statsShown: stats.shown,
+  };
+}
+
+/** Каталог из TenderMatch — без live rankAndFilter (~90ms × 40 на каждый запрос) */
+async function loadCatalogBatch(
+  ctx: FeedContext,
+  offset: number,
+  limit: number
+): Promise<TenderFeedPageResult> {
+  const perf = createPerfTimer("feed:catalog:cached");
+  const tenderWhere = buildFeedTenderWhere(ctx.filters, { allowExpired: false });
+  const totalInDb = await countActiveEisTenders(prisma, tenderWhere);
+  perf.step("countActiveEisTenders", { totalInDb });
+
+  const companyId = ctx.companyId;
+  if (!companyId) {
+    perf.end("fallback live");
+    return loadCatalogBatchLive(ctx, offset, limit, tenderWhere, totalInDb);
+  }
+
+  const catalogHash = computeCatalogHashFromDocuments(
+    {
+      description: ctx.companyProfile.description,
+      okvedCodes: JSON.stringify(ctx.companyProfile.okvedCodes),
+    },
+    ctx.documents
+  );
+
+  const cacheStatus = await getCompanyFeedCacheStatus(companyId, catalogHash);
+  perf.step("getCompanyFeedCacheStatus", {
+    count: cacheStatus.count,
+    stale: cacheStatus.stale,
+    rebuilding: cacheStatus.rebuilding,
+  });
+  void ensureCompanyFeedCache(companyId, catalogHash);
+
+  if (
+    cacheStatus.count === 0 &&
+    (cacheStatus.rebuilding || isFeedCacheRebuildActive(companyId))
+  ) {
+    perf.end("ожидание кэша");
+    return {
+      items: [],
+      nextOffset: 0,
+      hasMore: false,
+      totalInDb,
+      statsShown: 0,
+      cacheBuilding: true,
+    };
+  }
+
+  if (cacheStatus.count === 0) {
+    perf.end("fallback live (пустой кэш)");
+    return loadCatalogBatchLive(ctx, offset, limit, tenderWhere, totalInDb);
+  }
+
+  const where = {
+    companyId,
+    tender: tenderWhere,
+  };
+  const orderBy = buildCachedMatchOrderBy("catalog", ctx.filters.sort);
+
+  const [poolTotal, rows] = await Promise.all([
+    prisma.tenderMatch.count({ where }),
+    prisma.tenderMatch.findMany({
+      where,
+      orderBy,
+      skip: offset,
+      take: limit,
+      include: { tender: { select: TENDER_FEED_SELECT } },
+    }),
+  ]);
+  perf.step("tenderMatch query", { poolTotal, rows: rows.length, offset, limit });
+
+  const cards = await attachLabels(
+    companyId,
+    rows.map((row) => matchRowToCard(row.tender, row, ctx.hasCatalog))
+  );
+  perf.step("attachLabels", { cards: cards.length });
+
+  const nextOffset = offset + rows.length;
+  perf.end("готово", { poolTotal, hasMore: nextOffset < poolTotal });
+  return {
+    items: cards,
+    nextOffset,
+    hasMore: nextOffset < poolTotal,
+    totalInDb,
+    statsShown: poolTotal,
+    cacheBuilding: cacheStatus.rebuilding && poolTotal === 0,
   };
 }
 
@@ -597,7 +687,7 @@ export async function loadTenderFeedPage(options: {
   let result: TenderFeedPageResult;
   if (searchQuery.length >= 2) {
     result = await loadSearchBatch(ctx, options.feedMode, searchQuery, limit);
-  } else if (options.feedMode === "tagged" || options.tagId) {
+  } else if (options.feedMode === "tagged") {
     result = await loadTaggedBatch(ctx, options.feedMode, options.tagId, offset, limit);
   } else if (options.feedMode === "catalog") {
     result = await loadCatalogBatch(ctx, offset, limit);

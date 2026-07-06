@@ -1,6 +1,5 @@
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
 import { getAccessStatus } from "@/lib/subscription";
 import Sidebar from "@/components/Sidebar";
 import Link from "next/link";
@@ -13,9 +12,11 @@ import {
   countAssignmentsByLabel,
 } from "@/lib/tenderLabels";
 import { loadTenderFeedPage, type PageFeedMode } from "@/lib/tenderFeedPage";
+import { loadDocumentsForMatching } from "@/lib/documentQuery";
 import { createPerfTimer } from "@/lib/perfLog";
 import { parseFeedFilters } from "@/lib/tenderFeedFilters";
 import { buildTendersFeedReturnHref } from "@/lib/tenderFeedReturn";
+import { tendersViewHref } from "@/lib/tenderFeedNav";
 import TendersSyncButton from "@/components/TendersSyncButton";
 import { Suspense } from "react";
 import TenderFeedSearch from "@/components/tender/TenderFeedSearch";
@@ -24,6 +25,8 @@ import TenderLabelsBar from "@/components/tender/TenderLabelsBar";
 import TenderFeedInfiniteList from "@/components/tender/TenderFeedInfiniteList";
 import { BackgroundTzEnrichment, TenderFeedScrollRestore, FeedCachePoller } from "@/components/tender/TenderFeedNav";
 import { AutoSyncIndicator } from "@/components/tender/AutoSyncIndicator";
+
+export const dynamic = "force-dynamic";
 
 export default async function TendersPage({
   searchParams,
@@ -53,6 +56,23 @@ export default async function TendersPage({
   } = await searchParams;
   const searchQuery = (queryRaw || "").trim();
   const feedFilters = parseFeedFilters({ sort, deadline, include, exclude, priceMin, priceMax });
+
+  if (tagId && viewParam !== "tagged") {
+    redirect(
+      buildTendersFeedReturnHref({
+        view: "tagged",
+        tag: tagId,
+        q: searchQuery,
+        sort,
+        deadline,
+        include,
+        exclude,
+        priceMin,
+        priceMax,
+      })
+    );
+  }
+
   const feedMode: PageFeedMode =
     viewParam === "tagged"
       ? "tagged"
@@ -78,9 +98,7 @@ export default async function TendersPage({
 
   const companyId = user.company?.id;
 
-  const documents = user.company
-    ? await prisma.document.findMany({ where: { companyId: user.company.id } })
-    : [];
+  const documents = user.company ? await loadDocumentsForMatching(user.company.id) : [];
   perf.step("documents", { count: documents.length });
 
   const [tenderLabels, labelCounts, allTaggedIds, feedPage] = await Promise.all([
@@ -133,6 +151,10 @@ export default async function TendersPage({
     count: labelCounts.get(label.id) || 0,
   }));
 
+  const activeLabel = tagId ? labelsWithCounts.find((l) => l.id === tagId) : undefined;
+  const isTaggedFeed = feedMode === "tagged";
+  const feedListKey = `${feedMode}:${tagId ?? ""}:${searchQuery}:${sort ?? ""}:${deadline ?? ""}`;
+
   const hintLines: string[] = [];
   if (hasCatalog && feedMode === "matched") {
     const matchedTotal = feedPage.cacheMatchedCount ?? feedPage.statsShown;
@@ -177,16 +199,24 @@ export default async function TendersPage({
             <div className="min-w-0 flex-1">
               <h1 className="text-xl font-bold text-slate-900">Тендеры</h1>
               <p className="text-xs sm:text-sm text-slate-600 mt-0.5 leading-snug flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                <span>
-                  ЕИС: <span className="font-medium text-slate-800">{totalInDb}</span>
-                  <span className="mx-1">·</span>
-                  {focusLabel}
-                  <span className="mx-1">·</span>
-                  <span className="text-slate-800 font-medium">
-                    показано {feedPage.items.length}
-                    {feedPage.hasMore ? "+" : ""}
+                {isTaggedFeed ? (
+                  <span className="text-amber-900 font-medium">
+                    {activeLabel
+                      ? `Метка «${activeLabel.name}» — ${feedPage.items.length} из ${activeLabel.count}`
+                      : `Все с метками — ${feedPage.taggedTotal ?? allTaggedIds.length}`}
                   </span>
-                </span>
+                ) : (
+                  <span>
+                    ЕИС: <span className="font-medium text-slate-800">{totalInDb}</span>
+                    <span className="mx-1">·</span>
+                    {focusLabel}
+                    <span className="mx-1">·</span>
+                    <span className="text-slate-800 font-medium">
+                      показано {feedPage.items.length}
+                      {feedPage.hasMore ? "+" : ""}
+                    </span>
+                  </span>
+                )}
                 <AutoSyncIndicator />
                 {feedMode === "matched" && (feedPage.statsHiddenNoRu ?? 0) > 0 && (
                   <>
@@ -201,35 +231,46 @@ export default async function TendersPage({
 
           <div className="flex flex-wrap gap-1.5 mt-3">
             <Link
-              href="/tenders?view=matched"
+              href={tendersViewHref("matched")}
               className={`text-[11px] sm:text-xs px-2.5 py-1 rounded-full border transition-colors ${
                 feedMode === "matched"
                   ? "bg-emerald-50 border-emerald-300 text-emerald-800 font-medium"
-                  : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                  : isTaggedFeed
+                    ? "border-slate-200 text-slate-400 hover:bg-slate-50"
+                    : "border-slate-200 text-slate-600 hover:bg-slate-50"
               }`}
             >
               Можно участвовать
             </Link>
             <Link
-              href="/tenders?view=profile"
+              href={tendersViewHref("profile")}
               className={`text-[11px] sm:text-xs px-2.5 py-1 rounded-full border transition-colors ${
                 feedMode === "profile"
                   ? "bg-blue-50 border-blue-300 text-blue-800 font-medium"
-                  : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                  : isTaggedFeed
+                    ? "border-slate-200 text-slate-400 hover:bg-slate-50"
+                    : "border-slate-200 text-slate-600 hover:bg-slate-50"
               }`}
             >
               По профилю
             </Link>
             <Link
-              href="/tenders?view=catalog"
+              href={tendersViewHref("catalog")}
               className={`text-[11px] sm:text-xs px-2.5 py-1 rounded-full border transition-colors ${
                 feedMode === "catalog"
                   ? "bg-violet-50 border-violet-300 text-violet-800 font-medium"
-                  : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                  : isTaggedFeed
+                    ? "border-slate-200 text-slate-400 hover:bg-slate-50"
+                    : "border-slate-200 text-slate-600 hover:bg-slate-50"
               }`}
             >
               Каталог ({totalInDb})
             </Link>
+            {isTaggedFeed && (
+              <span className="text-[11px] sm:text-xs px-2.5 py-1 rounded-full border border-amber-300 bg-amber-50 text-amber-900 font-medium">
+                {activeLabel ? `Метка: ${activeLabel.name}` : "С метками"}
+              </span>
+            )}
           </div>
 
           {user.company && (
@@ -289,6 +330,7 @@ export default async function TendersPage({
             <p className="text-slate-800 font-medium mb-2 text-sm">Считаем совпадения с вашим РУ…</p>
             <p className="text-xs text-slate-500 mb-4 max-w-md mx-auto">
               Первый раз это занимает несколько минут ({totalInDb} закупок). Дальше лента открывается сразу из кэша.
+              Не запускайте синхронизацию и разбор ТЗ параллельно — это замедляет расчёт.
             </p>
             <div className="inline-flex items-center gap-2 text-sm text-slate-500">
               <span className="h-4 w-4 rounded-full border-2 border-slate-300 border-t-emerald-500 animate-spin" />
@@ -297,6 +339,7 @@ export default async function TendersPage({
           </div>
         ) : feedPage.items.length > 0 ? (
           <TenderFeedInfiniteList
+            key={feedListKey}
             initialItems={feedPage.items}
             initialOffset={feedPage.nextOffset}
             initialHasMore={feedPage.hasMore}

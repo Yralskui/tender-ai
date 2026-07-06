@@ -1,7 +1,8 @@
 "use client";
 
-import { useMemo } from "react";
-import { FileText, Download, ExternalLink } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { FileText, Download, ExternalLink, Loader2 } from "lucide-react";
+import DocumentDownloadLink from "@/components/tender/DocumentDownloadLink";
 import {
   classifyProcurementDocument,
   DOCUMENT_GROUP_LABELS,
@@ -57,10 +58,40 @@ function normalizeDocumentItem(raw: unknown): ProcurementDocumentItem {
 }
 
 export default function TenderDocumentsPanel({ tenderId, documents, fallbackDocuments = [] }: Props) {
-  const items = useMemo(() => {
+  const [eisDocs, setEisDocs] = useState<ProcurementDocumentItem[] | null>(null);
+  const [eisLoading, setEisLoading] = useState(false);
+
+  const placeholderItems = useMemo(() => {
     const source = documents.length > 0 ? documents : fallbackDocuments;
     return source.map(normalizeDocumentItem).filter((d) => d.name.length > 0);
   }, [documents, fallbackDocuments]);
+
+  useEffect(() => {
+    setEisDocs(null);
+  }, [tenderId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setEisLoading(true);
+    void fetch(`/api/tenders/${tenderId}/documents/list`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (cancelled) return;
+        const raw = data.documents as unknown[];
+        if (Array.isArray(raw) && raw.length > 0) {
+          setEisDocs(raw.map(normalizeDocumentItem).filter((d) => d.name.length > 0));
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setEisLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tenderId]);
+
+  const items = eisDocs && eisDocs.length > 0 ? eisDocs : placeholderItems;
 
   const grouped = useMemo(() => {
     const map = new Map<string, ProcurementDocumentItem[]>();
@@ -81,7 +112,11 @@ export default function TenderDocumentsPanel({ tenderId, documents, fallbackDocu
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-[11px] text-slate-500">{items.length} файлов с zakupki.gov.ru</p>
+        <p className="text-[11px] text-slate-500 flex items-center gap-1.5">
+          {eisLoading && <Loader2 size={11} className="animate-spin" />}
+          {items.length} файлов с zakupki.gov.ru
+          {eisDocs && eisDocs.length > 0 ? " (актуальный список)" : ""}
+        </p>
         <a
           href={archiveHref}
           className="inline-flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 transition-colors"
@@ -102,8 +137,6 @@ export default function TenderDocumentsPanel({ tenderId, documents, fallbackDocu
               const specCount = typeof d.specCount === "number" ? d.specCount : 0;
               const sizeLabel = formatSize(typeof d.sizeBytes === "number" ? d.sizeBytes : 0);
               const url = typeof d.url === "string" ? d.url : null;
-              const downloadHref = `/api/tenders/${tenderId}/documents/download?name=${encodeURIComponent(name)}`;
-
               return (
                 <div
                   key={`${name}-${i}`}
@@ -123,12 +156,7 @@ export default function TenderDocumentsPanel({ tenderId, documents, fallbackDocu
                     </div>
 
                     <div className="shrink-0 flex items-center gap-1.5">
-                      <a
-                        href={downloadHref}
-                        className="text-[11px] px-2 py-1 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 transition-colors"
-                      >
-                        Скачать
-                      </a>
+                      <DocumentDownloadLink tenderId={tenderId} docName={name} eisUrl={url} />
                       {url && (
                         <a
                           href={url}

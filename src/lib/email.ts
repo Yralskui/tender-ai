@@ -23,6 +23,17 @@ function resolveSmtpCandidates(): Array<{ host: string; port: number; label: str
   const configuredHost = process.env.SMTP_HOST || "smtp.mail.ru";
   const configuredPort = parseInt(process.env.SMTP_PORT || "465", 10);
 
+  // Явный SMTP_HOST в .env — не перебираем 4 хоста на каждое письмо
+  if (process.env.SMTP_HOST?.trim()) {
+    const list: Array<{ host: string; port: number; label: string }> = [
+      { host: configuredHost, port: configuredPort, label: "env" },
+    ];
+    if (domain === "bk.ru" && configuredHost !== "smtp.bk.ru") {
+      list.push({ host: "smtp.bk.ru", port: configuredPort, label: "bk-mirror" });
+    }
+    return list;
+  }
+
   const list: Array<{ host: string; port: number; label: string }> = [
     { host: configuredHost, port: configuredPort, label: "env" },
   ];
@@ -140,6 +151,21 @@ export async function sendEmailDetailed(message: EmailMessage): Promise<EmailSen
   if (resendResult.ok) return resendResult;
 
   const error = smtpResult.error || resendResult.error || "unknown";
+
+  const devFallback =
+    process.env.NODE_ENV !== "production" || process.env.EMAIL_CONSOLE_FALLBACK === "1";
+
+  // В dev / worker без production — не блокируем поток, письмо в консоль
+  if (devFallback) {
+    const appPwdHint = /parol prilozheniya|application password/i.test(error)
+      ? " (нужен пароль приложения Mail.ru: https://help.mail.ru/mail/security/protection/external )"
+      : "";
+    console.warn("[email:dev-fallback] SMTP/Resend failed:", error + appPwdHint);
+    console.log("[email:dev-fallback]", { to: message.to, subject: message.subject });
+    console.log(message.text);
+    return { ok: true, via: "console-fallback", error };
+  }
+
   console.error("[email] send failed:", error, "→", message.to);
   return { ok: false, error };
 }

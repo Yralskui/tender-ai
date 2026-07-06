@@ -4,11 +4,13 @@
 
 import { prisma } from "@/lib/prisma";
 import { importMedicalTendersFromEis } from "@/lib/zakupkiImport";
-import { purgeNonEisTenders, REAL_EIS_TENDER_WHERE } from "@/lib/tenderQuery";
+import { purgeNonEisTenders, REAL_EIS_TENDER_WHERE, invalidateTenderCountCache } from "@/lib/tenderQuery";
+import { tenderRowFromRequirements } from "@/lib/tenderMeta";
 import { runTenderMaintenance } from "@/lib/tenderMaintenance";
 import { rebuildTendersForAllCompanies } from "@/lib/tenderFeedCache";
 import { buildCompanyFocus, buildImportQueriesFromFocus } from "@/lib/companyFocus";
 import { mapCompanyDocuments } from "@/lib/matching";
+import { loadDocumentsForMatching } from "@/lib/documentQuery";
 import type { CompanyFocus } from "@/lib/companyFocus";
 
 export type SyncMode = "smart" | "catalog";
@@ -27,9 +29,9 @@ export interface SyncConfig {
 export function resolveSyncConfig(mode: SyncMode, limitParam: number): SyncConfig {
   if (mode === "catalog") {
     return {
-      limit: Math.min(Math.max(limitParam, 200), 2000),
+      limit: Math.min(Math.max(limitParam, 200), 2500),
       recordsPerQuery: 50,
-      searchPages: 16,
+      searchPages: 20,
       concurrency: 8,
       smartMode: false,
       fastImport: true,
@@ -106,6 +108,7 @@ export async function runTenderSync(options: RunTenderSyncOptions = {}): Promise
 
   for (const t of importResult.tenders) {
     const existing = await prisma.tender.findUnique({ where: { externalId: t.externalId } });
+    const reqRow = tenderRowFromRequirements(t.requirements as Record<string, unknown>);
     const record = await prisma.tender.upsert({
       where: { externalId: t.externalId },
       update: {
@@ -118,9 +121,9 @@ export async function runTenderSync(options: RunTenderSyncOptions = {}): Promise
         deadline: t.deadline,
         category: t.category,
         okvedCode: t.okvedCode,
-        requirements: JSON.stringify(t.requirements),
         sourceUrl: t.sourceUrl,
         status: "active",
+        ...reqRow,
       },
       create: {
         externalId: t.externalId,
@@ -133,9 +136,9 @@ export async function runTenderSync(options: RunTenderSyncOptions = {}): Promise
         deadline: t.deadline,
         category: t.category,
         okvedCode: t.okvedCode,
-        requirements: JSON.stringify(t.requirements),
         sourceUrl: t.sourceUrl,
         status: "active",
+        ...reqRow,
       },
     });
     if (existing) updated++;
@@ -163,6 +166,8 @@ export async function runTenderSync(options: RunTenderSyncOptions = {}): Promise
           ? ` Удалено просроченных: ${maintenance.expiredTendersDeleted}.`
           : "");
 
+  invalidateTenderCountCache().catch(() => {});
+
   return {
     success: true,
     mode,
@@ -184,7 +189,7 @@ export async function runTenderSync(options: RunTenderSyncOptions = {}): Promise
 
 /** Фокус компании для персонализированного импорта (кнопка в UI). */
 export async function buildSyncFocusForCompany(companyId: string) {
-  const documents = await prisma.document.findMany({ where: { companyId } });
+  const documents = await loadDocumentsForMatching(companyId);
   const company = await prisma.company.findUnique({ where: { id: companyId } });
   if (!company) return { companyFocus: null, searchQueries: undefined };
 

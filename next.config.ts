@@ -9,12 +9,22 @@ const allowedDevOrigins = [
 
 const nextConfig: NextConfig = {
   allowedDevOrigins,
-  serverExternalPackages: ["pdf-parse", "@napi-rs/canvas", "pdfjs-dist"],
+  serverExternalPackages: ["pdf-parse", "@napi-rs/canvas", "pdfjs-dist", "ioredis", "pg"],
   experimental: {
     proxyClientMaxBodySize: "25mb",
     serverActions: {
       bodySizeLimit: "25mb",
     },
+  },
+  async headers() {
+    return [
+      {
+        source: "/_next/static/:path*",
+        headers: [
+          { key: "Cache-Control", value: "public, max-age=31536000, immutable" },
+        ],
+      },
+    ];
   },
 };
 

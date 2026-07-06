@@ -1,5 +1,58 @@
 import { prisma } from "@/lib/prisma";
 import type { StructuredCatalogItem } from "@/lib/productDimensions";
+import { normalizeMatchText } from "@/lib/productFamilies";
+
+export interface CatalogDocSlice {
+  isRelevant?: boolean;
+  products?: string[];
+  catalogItems?: StructuredCatalogItem[];
+}
+
+function catalogLineKey(text: string): string {
+  return normalizeMatchText(text).slice(0, 120);
+}
+
+/**
+ * Объединяет позиции из CatalogProduct (с размерами) и строки из extractedData документов.
+ * Раньше при наличии хотя бы одной строки в БД игнорировались шапочки/комплекты только в JSON РУ.
+ */
+export function mergeCompanyCatalogSources(input: {
+  catalogRows: CatalogProductRow[];
+  docsForMatching: CatalogDocSlice[];
+  fallbackProducts?: string[];
+}): { catalogProducts: string[]; catalogStructured: StructuredCatalogItem[] } {
+  const structuredFromRows = catalogRowsToStructured(input.catalogRows);
+  const relevantDocs = input.docsForMatching.filter((d) => d.isRelevant !== false);
+
+  const structuredFromDocs = relevantDocs.flatMap((d) => d.catalogItems || []);
+  const productLinesFromDocs = relevantDocs.flatMap((d) => d.products || []);
+
+  const seenStructured = new Set<string>();
+  const catalogStructured: StructuredCatalogItem[] = [];
+
+  for (const item of [...structuredFromRows, ...structuredFromDocs]) {
+    const key = catalogLineKey(item.displayText || item.name || item.rawText);
+    if (!key || seenStructured.has(key)) continue;
+    seenStructured.add(key);
+    catalogStructured.push(item);
+  }
+
+  const seenProducts = new Set(catalogStructured.map((s) => catalogLineKey(s.displayText || s.name)));
+  const catalogProducts = catalogStructured.map((s) => s.displayText || s.name);
+
+  const extraLines = [
+    ...productLinesFromDocs,
+    ...(input.fallbackProducts || []),
+  ];
+  for (const line of extraLines) {
+    const key = catalogLineKey(line);
+    if (!key || seenProducts.has(key)) continue;
+    seenProducts.add(key);
+    catalogProducts.push(line);
+  }
+
+  return { catalogProducts, catalogStructured };
+}
 
 export interface CatalogProductRow {
   id: string;

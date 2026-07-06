@@ -88,7 +88,7 @@ export async function runAutoSyncCycle(
     }
 
     options.onProgress?.("Фоновый разбор ТЗ…");
-    void enrichPendingTendersInBackground(80);
+    void enrichPendingTendersInBackground(25);
 
     const cacheRemoved = syncResult.cacheDirsRemoved;
     const expiredDeleted = syncResult.expiredDeleted;

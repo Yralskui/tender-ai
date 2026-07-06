@@ -4,6 +4,12 @@ import { useRouter } from "next/navigation";
 import { Building2, Save, Loader2, CheckCircle, MapPin, DollarSign, FileText, Tag, Palette } from "lucide-react";
 import ThemeToggle from "@/components/ThemeToggle";
 import { regionOptionsForSelect } from "@/lib/regions";
+import NotificationPrefsPanel, {
+  type NotificationPrefsState,
+} from "@/components/notifications/NotificationPrefsPanel";
+import NotificationHistory, {
+  type NotificationItem,
+} from "@/components/notifications/NotificationHistory";
 
 const OKVED_OPTIONS = [
   { code: "26.20", label: "Производство компьютеров и оборудования" },
@@ -36,9 +42,11 @@ interface Props {
       okvedCodes: string;
     } | null;
   };
+  notificationPrefs: NotificationPrefsState;
+  notificationHistory: NotificationItem[];
 }
 
-export default function ProfileClient({ user }: Props) {
+export default function ProfileClient({ user, notificationPrefs, notificationHistory }: Props) {
   const router = useRouter();
   const company = user.company;
   const regionOptions = useMemo(
@@ -268,6 +276,16 @@ export default function ProfileClient({ user }: Props) {
               );
             })}
           </div>
+        </div>
+
+        <NotificationPrefsPanel initialPrefs={notificationPrefs} emailEnabled compact />
+
+        <div className="mt-6">
+          <NotificationHistory
+            items={notificationHistory}
+            title="История уведомлений"
+            defaultCollapsed
+          />
         </div>
 
         <div className="flex items-center gap-4">

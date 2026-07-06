@@ -125,14 +125,30 @@ export default function TenderAnalysisView({
             <p className="text-xs text-slate-500">{aiLabel}</p>
           </div>
           <div className="text-right">
-            <div className={`text-4xl font-bold tabular-nums ${fc.text}`}>{displayPercent}%</div>
-            <p className="text-xs text-slate-500">{percentLabel}</p>
+            <div className={`text-4xl font-bold tabular-nums ${fc.text}`}>
+              {forecast.preliminary ? "≈" : ""}
+              {displayPercent}%
+            </div>
+            <p className="text-xs text-slate-500">
+              {forecast.preliminary ? "предварительно · " : ""}
+              {percentLabel}
+            </p>
             {forecast.totalItems > 0 && forecast.chancePercent !== displayPercent && (
               <p className="text-[10px] text-slate-400 mt-0.5">шанс участия ~{forecast.chancePercent}%</p>
             )}
           </div>
         </div>
         <p className={`text-base font-medium text-slate-900 mb-1`}>{forecast.headline}</p>
+        {forecast.preliminary && (
+          <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-2">
+            Оценка по извещению ЕИС. После разбора файла ТЗ процент может сильно измениться.
+          </p>
+        )}
+        {tzParsedFromFile && forecast.totalItems > 0 && forecast.coveragePercent === 0 && (
+          <p className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 mb-2">
+            Прогноз пересчитан по файлу ТЗ: позиции закупки не совпали с вашим РУ.
+          </p>
+        )}
         {procurementVolumeSummary ? (
           <p className="text-sm font-semibold text-blue-800 bg-blue-50/80 border border-blue-100 rounded-lg px-3 py-2 mb-2">
             {procurementVolumeSummary}

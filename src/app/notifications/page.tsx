@@ -3,7 +3,7 @@ import { getCurrentUser } from "@/lib/auth";
 import { getAccessStatus } from "@/lib/subscription";
 import Sidebar from "@/components/Sidebar";
 import { prisma } from "@/lib/prisma";
-import { getOrCreatePreferences, formatRelativeTime } from "@/lib/notificationService";
+import { getOrCreatePreferences, formatRelativeTime, normalizeCoverageThreshold } from "@/lib/notificationService";
 import NotificationControls from "@/components/notifications/NotificationControls";
 import NotificationHistory from "@/components/notifications/NotificationHistory";
 
@@ -33,6 +33,7 @@ export default async function NotificationsPage() {
     tenderId: n.tenderId,
     read: Boolean(n.readAt),
     time: formatRelativeTime(n.createdAt),
+    createdAt: n.createdAt.toISOString(),
   }));
 
   return (
@@ -65,7 +66,9 @@ export default async function NotificationsPage() {
             notifyHighMatch: prefs.notifyHighMatch,
             notifyDeadline: prefs.notifyDeadline,
             notifyDocExpiry: prefs.notifyDocExpiry,
-            matchThreshold: prefs.matchThreshold,
+            matchThreshold: normalizeCoverageThreshold(prefs.matchThreshold),
+            notifyTitleKeywords: prefs.notifyTitleKeywords,
+            titleKeywords: prefs.titleKeywords,
             digestFrequency: prefs.digestFrequency as "instant" | "daily" | "weekly",
           }}
         />

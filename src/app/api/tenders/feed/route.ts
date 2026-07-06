@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { getAccessStatus } from "@/lib/subscription";
 import { loadTenderFeedPage, type PageFeedMode } from "@/lib/tenderFeedPage";
+import { loadDocumentsForMatching } from "@/lib/documentQuery";
 import { createPerfTimer } from "@/lib/perfLog";
 import { parseFeedFilters } from "@/lib/tenderFeedFilters";
 
@@ -48,9 +49,7 @@ export async function GET(req: Request) {
     // ignore
   }
 
-  const documents = user.company
-    ? await prisma.document.findMany({ where: { companyId: user.company.id } })
-    : [];
+  const documents = user.company ? await loadDocumentsForMatching(user.company.id) : [];
   perf.step("documents", { count: documents.length });
 
   const page = await loadTenderFeedPage({

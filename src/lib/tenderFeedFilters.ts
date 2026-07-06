@@ -3,7 +3,7 @@
  */
 
 import type { Prisma } from "@/generated/prisma/client";
-import { REAL_EIS_TENDER_WHERE } from "@/lib/tenderQuery";
+import { REAL_EIS_TENDER_WHERE } from "@/lib/tenderConstants";
 
 export type FeedSortMode = "score" | "deadline" | "new";
 export type FeedDeadlineFilter = "active" | "1d" | "3d" | "7d";
@@ -55,7 +55,7 @@ export const EXCLUDE_KEYWORD_PRESETS = [
   "вакцин",
 ];
 
-function parseWordList(raw?: string | null): string[] {
+export function parseKeywordList(raw?: string | null): string[] {
   if (!raw?.trim()) return [];
   return [
     ...new Set(
@@ -98,8 +98,8 @@ export function parseFeedFilters(params: {
   return {
     sort,
     deadline,
-    includeWords: parseWordList(params.include),
-    excludeWords: parseWordList(params.exclude),
+    includeWords: parseKeywordList(params.include),
+    excludeWords: parseKeywordList(params.exclude),
     priceMin: parsePriceParam(params.priceMin),
     priceMax: parsePriceParam(params.priceMax),
   };
@@ -199,14 +199,15 @@ export function buildFeedTenderWhere(
 }
 
 export function buildCachedMatchOrderBy(
-  feedMode: "matched" | "profile",
+  feedMode: "matched" | "profile" | "catalog",
   sort: FeedSortMode
 ): Prisma.TenderMatchOrderByWithRelationInput[] {
   if (sort === "deadline") return [{ tender: { deadline: "asc" } }];
   if (sort === "new") return [{ tender: { publishedAt: "desc" } }];
-  return feedMode === "matched"
-    ? [{ feedScore: "desc" }, { forecastChance: "desc" }]
-    : [{ relevanceScore: "desc" }, { feedScore: "desc" }];
+  if (feedMode === "profile") {
+    return [{ relevanceScore: "desc" }, { feedScore: "desc" }];
+  }
+  return [{ feedScore: "desc" }, { forecastChance: "desc" }];
 }
 
 export function buildCatalogOrderBy(sort: FeedSortMode): Prisma.TenderOrderByWithRelationInput {

@@ -11,6 +11,7 @@ import {
   Zap,
   Bell,
 } from "lucide-react";
+import NotificationBell from "@/components/notifications/NotificationBell";
 
 const nav = [
   { href: "/dashboard", icon: LayoutDashboard, label: "Дашборд" },
@@ -30,7 +31,11 @@ export default function Sidebar() {
   }
 
   return (
-    <aside className="app-sidebar w-[52px] xl:w-[200px] min-h-screen flex flex-col shrink-0">
+    <>
+      <div className="fixed top-3 right-4 z-50 lg:top-4 lg:right-6">
+        <NotificationBell />
+      </div>
+      <aside className="app-sidebar w-[52px] xl:w-[200px] min-h-screen flex flex-col shrink-0">
       <div className="h-14 flex items-center px-3 xl:px-4 border-b border-slate-100">
         <Link href="/dashboard" className="flex items-center gap-2 min-w-0">
           <div className="w-8 h-8 rounded-lg btn-primary flex items-center justify-center shrink-0">
@@ -88,5 +93,6 @@ export default function Sidebar() {
         </button>
       </div>
     </aside>
+    </>
   );
 }
