@@ -28,5 +28,6 @@ export async function GET(req: NextRequest) {
 
   const successUrl = new URL("/auth/verify-email", req.url);
   successUrl.searchParams.set("verified", "1");
+  successUrl.searchParams.set("email", result.email);
   return NextResponse.redirect(successUrl);
 }

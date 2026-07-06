@@ -74,7 +74,7 @@ export async function POST(req: NextRequest) {
 
     const sent = await createAndSendVerificationEmail(user);
 
-    const verifyParams = new URLSearchParams({ email: user.email });
+    const verifyParams = new URLSearchParams({ email: user.email, sent: "1" });
     if (sent.devVerifyUrl) {
       verifyParams.set("devLink", sent.devVerifyUrl);
     }

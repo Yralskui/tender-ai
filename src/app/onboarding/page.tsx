@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { getAccessStatus } from "@/lib/subscription";
 import OnboardingClient from "./OnboardingClient";
+import { isProfileOnboardingDone, isOnboardingComplete } from "@/lib/onboardingStatus";
 
 export default async function OnboardingPage() {
   const user = await getCurrentUser();
@@ -15,15 +16,10 @@ export default async function OnboardingPage() {
     ? await prisma.document.count({ where: { companyId: user.company.id } })
     : 0;
 
-  const isProfileDone = !!(
-    user.company?.description &&
-    user.company.description.length > 20 &&
-    user.company.okvedCodes &&
-    user.company.okvedCodes !== "[]"
-  );
+  const isProfileDone = isProfileOnboardingDone(user);
 
   // Если всё готово — на дашборд
-  if (isProfileDone && docCount >= 2) {
+  if (isOnboardingComplete(user, docCount)) {
     redirect("/dashboard");
   }
 

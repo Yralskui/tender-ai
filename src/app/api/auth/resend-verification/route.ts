@@ -18,6 +18,13 @@ export async function POST(req: NextRequest) {
 
     // Не раскрываем, есть ли аккаунт
     if (!user || user.emailVerifiedAt) {
+      if (user?.emailVerifiedAt) {
+        return NextResponse.json({
+          success: true,
+          alreadyVerified: true,
+          message: "Email уже подтверждён — можно войти в аккаунт",
+        });
+      }
       return NextResponse.json({
         success: true,
         message: "Если аккаунт существует и не подтверждён, письмо отправлено",

@@ -30,7 +30,7 @@ export default function LoginPage() {
         setError(data.error || "Ошибка входа");
         return;
       }
-      window.location.assign("/dashboard");
+      window.location.assign("/onboarding");
     } catch {
       setError("Ошибка соединения с сервером");
     } finally {

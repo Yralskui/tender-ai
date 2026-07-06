@@ -1,5 +1,6 @@
 "use client";
 import { useState, useMemo } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Building2, Save, Loader2, CheckCircle, MapPin, DollarSign, FileText, Tag, Palette } from "lucide-react";
 import ThemeToggle from "@/components/ThemeToggle";
@@ -31,6 +32,7 @@ interface Props {
     id: string;
     name: string | null;
     email: string;
+    emailVerified?: boolean;
     company: {
       id: string;
       name: string;
@@ -135,15 +137,34 @@ export default function ProfileClient({ user, notificationPrefs, notificationHis
           <h2 className="font-semibold text-slate-900 mb-4 flex items-center gap-2">
             <Building2 size={18} className="text-blue-600" /> Личные данные
           </h2>
-          <div>
-            <label className="block text-sm text-slate-600 mb-1.5">Ваше имя</label>
-            <input
-              value={form.userName}
-              onChange={(e) => setForm({ ...form, userName: e.target.value })}
-              placeholder="Иван Иванов"
-              className="w-full px-4 py-3 rounded-xl app-input w-full px-4 py-3 rounded-xl text-sm transition-colors"
-              
-            />
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm text-slate-600 mb-1.5">Email</label>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm text-slate-800 font-medium">{user.email}</span>
+                {user.emailVerified ? (
+                  <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
+                    <CheckCircle size={12} /> Подтверждён
+                  </span>
+                ) : (
+                  <Link
+                    href={`/auth/verify-email?email=${encodeURIComponent(user.email)}`}
+                    className="text-xs text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full hover:bg-amber-100"
+                  >
+                    Не подтверждён — подтвердить
+                  </Link>
+                )}
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm text-slate-600 mb-1.5">Ваше имя</label>
+              <input
+                value={form.userName}
+                onChange={(e) => setForm({ ...form, userName: e.target.value })}
+                placeholder="Иван Иванов"
+                className="w-full px-4 py-3 rounded-xl app-input text-sm transition-colors"
+              />
+            </div>
           </div>
         </div>
 

@@ -8,6 +8,8 @@ import TrialBanner from "@/components/TrialBanner";
 import TendersSyncButton from "@/components/TendersSyncButton";
 import { loadTenderFeedPage } from "@/lib/tenderFeedPage";
 import { createPerfTimer } from "@/lib/perfLog";
+import { isOnboardingComplete } from "@/lib/onboardingStatus";
+import { prisma } from "@/lib/prisma";
 import Link from "next/link";
 import {
   FileText,
@@ -37,6 +39,13 @@ export default async function DashboardPage() {
 
   const access = getAccessStatus(user);
   if (!access.hasAccess) redirect("/paywall");
+
+  const docCountEarly = user.company
+    ? await prisma.document.count({ where: { companyId: user.company.id } })
+    : 0;
+  if (!isOnboardingComplete(user, docCountEarly)) {
+    redirect("/onboarding");
+  }
 
   let okvedCodes: string[] = [];
   try {

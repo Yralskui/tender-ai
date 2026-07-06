@@ -40,6 +40,7 @@ export default async function ProfilePage() {
           id: user.id,
           name: user.name,
           email: user.email,
+          emailVerified: user.emailVerifiedAt != null,
           company: user.company ? {
             id: user.company.id,
             name: user.company.name,

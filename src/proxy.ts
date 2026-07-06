@@ -10,6 +10,8 @@ const PUBLIC_PATHS = [
   "/api/auth/register",
   "/api/auth/verify-email",
   "/api/auth/resend-verification",
+  "/api/auth/session",
+  "/api/auth/verification-status",
   "/api/cron/sync",
   "/api/cron/notifications",
 ];
