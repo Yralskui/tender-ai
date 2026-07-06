@@ -72,53 +72,27 @@ export async function purgeExpiredTenders(
 
 
 
-  const expired = await prisma.tender.findMany({
-
-    where: { deadline: { lt: now } },
-
-    select: {
-
-      id: true,
-
-      externalId: true,
-
-      _count: { select: { labelAssignments: true } },
-
+  const toDelete = await prisma.tender.findMany({
+    where: {
+      deadline: { lt: now },
+      labelAssignments: { none: {} },
     },
-
+    select: { id: true, externalId: true },
   });
 
-
-
-  const toDelete = expired.filter((t) => t._count.labelAssignments === 0);
-
   if (toDelete.length === 0) {
-
     return { deleted: 0, externalIds: [] };
-
   }
-
-
 
   const ids = toDelete.map((t) => t.id);
-
   const externalIds = toDelete.map((t) => t.externalId);
 
-
-
   await prisma.tenderMatch.deleteMany({ where: { tenderId: { in: ids } } });
-
   await prisma.tender.deleteMany({ where: { id: { in: ids } } });
 
-
-
   for (const externalId of externalIds) {
-
     await removeTzCacheDir(externalId);
-
   }
-
-
 
   return { deleted: toDelete.length, externalIds };
 
@@ -197,6 +171,28 @@ export async function purgeOrphanTzCache(prisma: PrismaClient): Promise<number> 
 }
 
 
+
+/** Удаляет одну просроченную закупку, если на ней не осталось меток */
+export async function purgeExpiredTenderIfUnlabeled(
+  prisma: PrismaClient,
+  tenderId: string
+): Promise<boolean> {
+  const now = new Date();
+  const tender = await prisma.tender.findFirst({
+    where: {
+      id: tenderId,
+      deadline: { lt: now },
+      labelAssignments: { none: {} },
+    },
+    select: { id: true, externalId: true },
+  });
+  if (!tender) return false;
+
+  await prisma.tenderMatch.deleteMany({ where: { tenderId: tender.id } });
+  await prisma.tender.delete({ where: { id: tender.id } });
+  await removeTzCacheDir(tender.externalId);
+  return true;
+}
 
 export async function runTenderMaintenance(prisma: PrismaClient): Promise<MaintenanceResult> {
 

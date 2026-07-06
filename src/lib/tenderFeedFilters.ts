@@ -173,10 +173,8 @@ export function buildFeedTenderWhere(
   if (!options.allowExpired) {
     const range = deadlineRange(filters.deadline);
     if (range) parts.push({ deadline: range });
-  } else if (filters.deadline === "1d" || filters.deadline === "3d" || filters.deadline === "7d") {
-    const range = deadlineRange(filters.deadline);
-    if (range) parts.push({ deadline: range });
   }
+  // С метками — показываем и просроченные; фильтр срока не скрывает их
 
   if (filters.includeWords.length > 0) {
     parts.push({

@@ -2,7 +2,7 @@
  * Единая точка разбора вложения ТЗ (DOCX таблицы / текст / Excel НМЦК).
  */
 
-import { parseDocxKtruTables, parseSimpleOozTable, parseWideOozTable, parseArticle33OozTable, parseNoKtruWideOozTable, buildDocxParseResult, type KtruProductBlock } from "@/lib/docxTableParser";
+import { parseDocxKtruTables, parseSimpleOozTable, parseWideOozTable, parseArticle33OozTable, parseNoKtruWideOozTable, parseStackedArticle33OozTable, buildDocxParseResult, type KtruProductBlock } from "@/lib/docxTableParser";
 import { extractTextFromXlsxBuffer } from "@/lib/excelText";
 import {
   isNmckExcelName,
@@ -41,72 +41,50 @@ export function parseNmckExcelBuffer(buffer: Buffer): DocumentParseResult | null
 }
 
 export function parseOozDocxBuffer(buffer: Buffer): DocumentParseResult | null {
-  const article33 = parseArticle33OozTable(buffer);
-  if (article33 && article33.products.length > 0) {
-    const quality = scoreTzParseQuality(article33);
-    if (quality >= 25) {
-      return {
-        ...article33,
-        hasRuRequirement: true,
-        quality,
-        source: "docx-tables",
-      };
-    }
-  }
+  const asDocxTable = (parsed: TzParseResult | null): DocumentParseResult | null => {
+    if (!parsed || parsed.products.length === 0) return null;
+    const quality = scoreTzParseQuality(parsed);
+    if (quality < 25) return null;
+    return { ...parsed, hasRuRequirement: true, quality, source: "docx-tables" };
+  };
 
-  const noKtruWide = parseNoKtruWideOozTable(buffer);
-  if (noKtruWide && noKtruWide.products.length > 0) {
-    const quality = scoreTzParseQuality(noKtruWide);
-    if (quality >= 25) {
-      return {
-        ...noKtruWide,
-        hasRuRequirement: true,
-        quality,
-        source: "docx-tables",
-      };
-    }
-  }
+  const blockCount = (r: DocumentParseResult) => r.productBlocks?.length ?? r.products.length;
+  const maxBlockChars = (r: DocumentParseResult) =>
+    Math.max(0, ...(r.productBlocks?.map((b) => b.characteristics.length) ?? [0]));
 
-  const wideParse = parseWideOozTable(buffer);
-  if (wideParse && wideParse.products.length > 0) {
-    const quality = scoreTzParseQuality(wideParse);
-    if (quality >= 25) {
-      return {
-        ...wideParse,
-        hasRuRequirement: true,
-        quality,
-        source: "docx-tables",
-      };
-    }
-  }
+  const pickBest = (...candidates: Array<DocumentParseResult | null>): DocumentParseResult | null => {
+    const valid = candidates.filter((c): c is DocumentParseResult => c != null);
+    if (valid.length === 0) return null;
+    valid.sort((a, b) => {
+      const dBlocks = blockCount(b) - blockCount(a);
+      if (dBlocks !== 0) return dBlocks;
+      const megaA = maxBlockChars(a) > 25 ? 1 : 0;
+      const megaB = maxBlockChars(b) > 25 ? 1 : 0;
+      if (megaA !== megaB) return megaA - megaB;
+      return b.quality - a.quality;
+    });
+    return valid[0]!;
+  };
 
-  // Простая таблица ООЗ (№ | Наименование | Характеристики в одной ячейке).
-  const simpleParse = parseSimpleOozTable(buffer);
-  if (simpleParse && simpleParse.products.length > 0) {
-    const quality = scoreTzParseQuality(simpleParse);
-    if (quality >= 25) {
-      return {
-        ...simpleParse,
-        hasRuRequirement: true,
-        quality,
-        source: "docx-tables",
-      };
-    }
-  }
+  const stackedArticle33 = asDocxTable(parseStackedArticle33OozTable(buffer));
+  if (stackedArticle33) return stackedArticle33;
 
-  // Затем — экспортные таблицы КТРУ (многострочные OOZ).
-  const tableParse = parseDocxKtruTables(buffer);
-  if (tableParse && tableParse.products.length > 0) {
-    const quality = scoreTzParseQuality(tableParse);
-    if (quality >= 25) {
-      return {
-        ...tableParse,
-        hasRuRequirement: true,
-        quality,
-        source: "docx-tables",
-      };
-    }
-  }
+  const article33 = asDocxTable(parseArticle33OozTable(buffer));
+  const ktruTables = asDocxTable(parseDocxKtruTables(buffer));
+  const bestArticleOrKtru = pickBest(article33, ktruTables);
+  if (bestArticleOrKtru) return bestArticleOrKtru;
+
+  const noKtruWide = asDocxTable(parseNoKtruWideOozTable(buffer));
+  if (noKtruWide) return noKtruWide;
+
+  const wideParse = asDocxTable(parseWideOozTable(buffer));
+  if (wideParse) return wideParse;
+
+  const simpleParse = asDocxTable(parseSimpleOozTable(buffer));
+  if (simpleParse) return simpleParse;
+
+  const tableParse = ktruTables;
+  if (tableParse) return tableParse;
 
   const text = extractTextFromDocxBuffer(buffer);
   if (!text || text.length < 100) return null;

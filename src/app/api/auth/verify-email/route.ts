@@ -3,10 +3,11 @@ import { cookies } from "next/headers";
 import { signToken } from "@/lib/auth";
 import { authCookieOptions } from "@/lib/authCookie";
 import { verifyEmailByToken } from "@/lib/emailVerification";
+import { appRedirectUrl } from "@/lib/appUrl";
 
 export async function GET(req: NextRequest) {
   const token = req.nextUrl.searchParams.get("token");
-  const failUrl = new URL("/auth/verify-email", req.url);
+  const failUrl = appRedirectUrl("/auth/verify-email", req);
 
   if (!token) {
     failUrl.searchParams.set("error", "missing");
@@ -26,7 +27,7 @@ export async function GET(req: NextRequest) {
   const cookieStore = await cookies();
   cookieStore.set("auth-token", jwt, authCookieOptions());
 
-  const successUrl = new URL("/auth/verify-email", req.url);
+  const successUrl = appRedirectUrl("/auth/verify-email", req);
   successUrl.searchParams.set("verified", "1");
   successUrl.searchParams.set("email", result.email);
   return NextResponse.redirect(successUrl);

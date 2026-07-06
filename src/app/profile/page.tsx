@@ -35,7 +35,8 @@ export default async function ProfilePage() {
   return (
     <div className="flex min-h-screen app-shell">
       <Sidebar />
-      <ProfileClient
+      <div className="flex flex-1 min-h-0 min-w-0">
+        <ProfileClient
         user={{
           id: user.id,
           name: user.name,
@@ -62,7 +63,8 @@ export default async function ProfilePage() {
           titleKeywords: notificationPrefs.titleKeywords,
         }}
         notificationHistory={notificationHistory}
-      />
+        />
+      </div>
     </div>
   );
 }

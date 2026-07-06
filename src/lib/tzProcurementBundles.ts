@@ -98,6 +98,19 @@ function isKitName(name: string): boolean {
 }
 
 function splitSpecLine(spec: string): { product: string; charLabel: string } | null {
+  const colonAt = spec.lastIndexOf(": ");
+  if (colonAt < 0) return null;
+  const value = spec.slice(colonAt + 2).trim();
+  const head = spec.slice(0, colonAt);
+  const dashAt = head.lastIndexOf(" — ");
+  if (dashAt >= 4) {
+    const product = head.slice(0, dashAt).trim();
+    const field = head.slice(dashAt + 3).trim();
+    if (product.length >= 4 && field.length >= 2 && value.length >= 1) {
+      return { product, charLabel: `${field}: ${value}` };
+    }
+  }
+
   const dash = spec.match(/^(.+?)\s+[—–-]\s+(.+)$/);
   if (dash) {
     const product = dash[1].trim();
@@ -401,27 +414,30 @@ export function buildProcurementBundles(
   const bundles = [...byPosition.values()].sort((a, b) => a.position - b.position);
 
   if (orphanSpecs.length > 0 && bundles.length > 0) {
-    const primary = bundles[0];
-    const existing = new Set(
-      primary.characteristics.map(
-        (c) => `${(c.field || c.label).toLowerCase()}|${(c.value || "").toLowerCase()}`
-      )
-    );
     for (const o of orphanSpecs) {
       if (!o.field?.trim()) continue;
       if (!o.field.trim() && /^(да|нет)$/i.test(o.value)) continue;
+
+      const target = findOrphanTargetBundle(o, bundles);
+      if (!target) continue;
+
+      const existing = new Set(
+        target.characteristics.map(
+          (c) => `${(c.field || c.label).toLowerCase()}|${(c.value || "").toLowerCase()}`
+        )
+      );
       const key = `${o.field.toLowerCase()}|${o.value.toLowerCase()}`;
       if (existing.has(key)) continue;
-      existing.add(key);
+
       const m = matchTzCharacteristic(
         o.field,
         o.value,
-        primary.name,
+        target.name,
         catalogProducts,
         catalogStructured
       );
-      primary.characteristics.push({
-        id: `${primary.id}-c${primary.characteristics.length}`,
+      target.characteristics.push({
+        id: `${target.id}-c${target.characteristics.length}`,
         label: normalizeDisplayText(`${o.field}: ${o.value}`),
         field: o.field,
         value: o.value,
@@ -474,6 +490,38 @@ export function buildProcurementBundles(
   }
 
   return bundles;
+}
+
+function findOrphanTargetBundle(
+  orphan: { field: string; value: string },
+  bundles: ProcurementBundle[]
+): ProcurementBundle | undefined {
+  if (bundles.length === 1) return bundles[0];
+
+  const fieldL = orphan.field.toLowerCase();
+
+  if (/бахил|подошв|резинка\s+фиксир/i.test(fieldL)) {
+    return bundles.find((b) => /бахил/i.test(b.name));
+  }
+  if (/флакон|вязкост/i.test(fieldL)) {
+    return bundles.find((b) => /гель|контактн/i.test(b.name));
+  }
+  if (/индикатор|стерил|режим|метк|перфорац|журнал/i.test(fieldL)) {
+    return bundles.find((b) => /индикатор|стерил/i.test(b.name));
+  }
+  if (/^длина$/i.test(fieldL)) {
+    return bundles.find((b) => /бахил/i.test(b.name));
+  }
+
+  const withSimilar = bundles.filter((b) =>
+    b.characteristics.some((c) => {
+      const cf = (c.field || c.label).toLowerCase();
+      return cf === fieldL || cf.includes(fieldL) || fieldL.includes(cf);
+    })
+  );
+  if (withSimilar.length === 1) return withSimilar[0];
+
+  return undefined;
 }
 
 export function blockProcurementBundleMatches(

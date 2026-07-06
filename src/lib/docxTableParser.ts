@@ -9,6 +9,7 @@ import {
   looksLikeProductName,
   isUsefulTzCharacteristic,
   isGenericProcurementTitle,
+  isPlaceholderPositionName,
 } from "@/lib/tzSanitizer";
 import { isKtruCode, normalizeTzSpecText } from "@/lib/textNormalize";
 import {
@@ -111,6 +112,10 @@ function appendBlockCharacteristics(
 }
 
 function blockVariantLabel(block: KtruProductBlock, blocks: KtruProductBlock[]): string {
+  const name = block.name?.trim() || "";
+  if (name.length >= 8 && !isPlaceholderPositionName(name) && !isKtruCode(name)) {
+    return name;
+  }
   const sameNameCount = blocks.filter((b) => b.name === block.name).length;
   if (blocks.length === 1) return resolveBlockProductLabel(block);
   if (sameNameCount > 1) return deriveBlockVariantName(block);
@@ -382,11 +387,222 @@ export function parseWideOozTable(buffer: Buffer): DocxKtruParseResult | null {
   return buildDocxParseResult(blocks, "Номенклатура из таблицы ООЗ");
 }
 
+function joinDocxCellTexts(texts: string[]): string {
+  return texts
+    .reduce((acc, part) => {
+      if (!part) return acc;
+      if (!acc) return part;
+      const prev = acc.slice(-1);
+      const next = part[0];
+      const needSpace =
+        /[а-яёa-z0-9]$/i.test(prev) &&
+        /^[а-яёa-z]/i.test(next) &&
+        !/[\s\-—–/(]$/.test(acc);
+      return acc + (needSpace ? " " : "") + part;
+    }, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function extractRowCells(trXml: string): string[] {
-  return [...trXml.matchAll(/<w:tc[\s\S]*?<\/w:tc>/g)].map((tc) => {
-    const texts = [...tc[0].matchAll(/<w:t[^>]*>([^<]*)<\/w:t>/g)].map((m) => m[1]);
-    return texts.join("").replace(/\s+/g, " ").trim();
-  }).map((cell) => normalizeTzSpecText(cell));
+  return [...trXml.matchAll(/<w:tc[\s\S]*?<\/w:tc>/g)]
+    .map((tc) => {
+      const texts = [...tc[0].matchAll(/<w:t[^>]*>([^<]*)<\/w:t>/g)].map((m) => m[1]);
+      return joinDocxCellTexts(texts);
+    })
+    .map((cell) => normalizeTzSpecText(cell));
+}
+
+function readDocxTableRows(buffer: Buffer): string[][] | null {
+  if (buffer.length < 100) return null;
+  try {
+    const zip = new AdmZip(buffer);
+    const entry = zip.getEntry("word/document.xml");
+    if (!entry) return null;
+    const xml = entry.getData().toString("utf8");
+    return [...xml.matchAll(/<w:tr[^>]*>([\s\S]*?)<\/w:tr>/g)].map((r) => extractRowCells(r[1]));
+  } catch {
+    return null;
+  }
+}
+
+function cleanStackedArticle33ProductName(raw: string): string {
+  return normalizeTzSpecText(raw)
+    .replace(/обоснование\s+включения[\s\S]*$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractKtruCodeFromCell(text: string): string {
+  return text.match(KTRU_CODE_RE)?.[1] || "";
+}
+
+function isStackedArticle33Value(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  if (/^(соответствие|наличие|отсутствие)$/i.test(t)) return true;
+  if (/^(≥|≤|>=|<=)/.test(t)) return true;
+  if (/^\d/.test(t)) return true;
+  return false;
+}
+
+function parseStackedArticle33ProductRow(cells: string[]): {
+  name: string;
+  code: string;
+  inlineChar?: string;
+} | null {
+  const code = extractKtruCodeFromCell(cells[1] || "");
+  if (!code) return null;
+
+  const nameRaw = cleanStackedArticle33ProductName(cells[0] || "");
+  if (nameRaw.length < 6) return null;
+  if (/^наименование|^коды$/i.test(nameRaw)) return null;
+  if (/^\d{1,3}$/.test(nameRaw)) return null;
+
+  const inlineRaw = (cells[2] || "").trim();
+  const inlineChar =
+    inlineRaw.length >= 3 &&
+    !KTRU_CODE_RE.test(inlineRaw) &&
+    !/наименование\s+характеристик/i.test(inlineRaw)
+      ? inlineRaw.replace(/:$/, "")
+      : undefined;
+
+  return { name: nameRaw, code, inlineChar };
+}
+
+function isStackedArticle33HeaderText(text: string): boolean {
+  const c = text.replace(/\s+/g, " ").toLowerCase();
+  return /наименование\s+товара/.test(c) && /дополнитель/.test(c) && /информация/.test(c);
+}
+
+function detectStackedArticle33Format(rows: string[][]): boolean {
+  const hasWideHeader = rows.some((cells) => cells.some((c) => isStackedArticle33HeaderText(c)));
+  if (!hasWideHeader) return false;
+
+  const products = rows.filter((cells) => parseStackedArticle33ProductRow(cells) !== null);
+  const valueRows = rows.filter((cells) => {
+    const name = (cells[0] || "").trim();
+    const value = (cells[1] || "").trim();
+    return !name && value && isStackedArticle33Value(value);
+  });
+  return products.length >= 1 && valueRows.length >= 3;
+}
+
+function refineStackedBlockName(block: KtruProductBlock, allBlocks: KtruProductBlock[]): string {
+  const base = block.name.replace(/\s*\(вариант\s+\d+\)$/i, "").trim();
+  const duplicates = allBlocks.filter(
+    (b) => b.name.replace(/\s*\(вариант\s+\d+\)$/i, "").trim().toLowerCase() === base.toLowerCase()
+  );
+  if (duplicates.length <= 1) return block.name;
+
+  const purpose = block.characteristics.find((c) => /^предназначен/i.test(c.name.trim()));
+  if (purpose) {
+    const tail =
+      purpose.name.length > 58 ? `${purpose.name.slice(0, 55).trim()}…` : purpose.name.trim();
+    return `${base} — ${tail}`;
+  }
+
+  const mode = block.characteristics.find((c) => /^контролируемые режимы/i.test(c.name.trim()));
+  if (mode) {
+    const tail = mode.name.length > 58 ? `${mode.name.slice(0, 55).trim()}…` : mode.name.trim();
+    return `${base} — ${tail}`;
+  }
+
+  const idx = duplicates.findIndex((b) => b === block);
+  return idx > 0 ? `${base} (вариант ${idx + 1})` : base;
+}
+
+/**
+ * ООЗ ст. 33 в экспорте ЕИС: товар в строке с КТРУ, характеристики — парами строк
+ * (наименование → значение «соответствие» / «≥ N» / «наличие»).
+ */
+export function parseStackedArticle33OozTable(buffer: Buffer): DocxKtruParseResult | null {
+  const rows = readDocxTableRows(buffer);
+  if (!rows || !detectStackedArticle33Format(rows)) return null;
+
+  const blocks: KtruProductBlock[] = [];
+  let current: KtruProductBlock | null = null;
+  let pendingCharName: string | null = null;
+  let positionCounter = 0;
+  const nameCounts = new Map<string, number>();
+
+  const uniqueProductLabel = (baseName: string): string => {
+    const key = baseName.toLowerCase();
+    const count = (nameCounts.get(key) || 0) + 1;
+    nameCounts.set(key, count);
+    return count === 1 ? baseName : `${baseName} (вариант ${count})`;
+  };
+
+  const flushPending = () => {
+    if (current && pendingCharName) {
+      current.characteristics.push({ name: pendingCharName, value: "соответствие" });
+      pendingCharName = null;
+    }
+  };
+
+  const pushChar = (name: string, value: string) => {
+    if (!current) return;
+    const n = name.replace(/:$/, "").trim();
+    const v = cleanCharValue(value);
+    if (!n || !v || NOISE_VALUE_RE.test(n)) return;
+    if (/^значение характеристики не может/i.test(v)) return;
+    const key = `${n}|${v}`.toLowerCase();
+    if (current.characteristics.some((c) => `${c.name}|${c.value}`.toLowerCase() === key)) return;
+    current.characteristics.push({ name: n, value: v });
+  };
+
+  for (const cells of rows) {
+    if (cells.every((c) => !c)) continue;
+
+    if (cells.some((c) => isStackedArticle33HeaderText(c))) continue;
+    if (cells.some((c) => /наименованиехарактеристики/i.test(c.replace(/\s+/g, "")))) continue;
+    if (cells.length >= 6 && cells.every((c) => /^\d{1,2}$/.test(c))) continue;
+
+    const product = parseStackedArticle33ProductRow(cells);
+    if (product) {
+      flushPending();
+      if (current) blocks.push(current);
+      positionCounter += 1;
+      current = {
+        position: String(positionCounter),
+        name: uniqueProductLabel(product.name),
+        code: product.code,
+        characteristics: [],
+      };
+      if (product.inlineChar) pendingCharName = product.inlineChar;
+      continue;
+    }
+
+    if (!current) continue;
+
+    const nameCell = (cells[0] || "").trim();
+    const valueCell = (cells[1] || "").trim();
+
+    if (!nameCell && valueCell && isStackedArticle33Value(valueCell)) {
+      if (pendingCharName) {
+        pushChar(pendingCharName, valueCell);
+        pendingCharName = null;
+      }
+      continue;
+    }
+
+    if (nameCell.length >= 3 && !isStackedArticle33Value(nameCell) && !KTRU_CODE_RE.test(nameCell)) {
+      if (/участник\s+закупки/i.test(nameCell)) continue;
+      flushPending();
+      pendingCharName = nameCell;
+      continue;
+    }
+  }
+
+  flushPending();
+  if (current) blocks.push(current);
+  if (blocks.length === 0) return null;
+
+  for (const block of blocks) {
+    block.name = refineStackedBlockName(block, blocks);
+  }
+
+  return buildDocxParseResult(blocks, "Номенклатура из ООЗ (ст. 33, таблица ЕИС)");
 }
 
 function cleanCharValue(raw: string): string {
@@ -517,6 +733,22 @@ function cleanArticle33ProductName(raw: string): string {
     .trim();
 }
 
+function article33UnitQty(cells: string[]): { hasUnit: boolean; hasQty: boolean; quantity: number } {
+  const c3 = (cells[3] || "").trim();
+  const c4 = (cells[4] || "").trim();
+  const c5 = (cells[5] || "").trim();
+  let hasUnit = /^(шт|штук)/i.test(c3);
+  let hasQty = /^\d+$/.test(c4);
+  let quantity = hasQty ? parseInt(c4, 10) : 0;
+  // ЕИС: [3]=«Характеристики товаров согласно КТРУ», [4]=Штука, [5]=Ограничение
+  if (!hasUnit && /характеристик/i.test(c3) && /^(шт|штук)/i.test(c4)) {
+    hasUnit = true;
+    hasQty = /^\d+$/.test(c5);
+    quantity = hasQty ? parseInt(c5, 10) : 0;
+  }
+  return { hasUnit, hasQty, quantity };
+}
+
 function isArticle33ProductRow(cells: string[]): {
   name: string;
   code: string;
@@ -533,19 +765,19 @@ function isArticle33ProductRow(cells: string[]): {
   if (!codeMatch) return null;
 
   const nameCell = cleanArticle33ProductName((cells[2] || "").trim());
-  const unitCell = (cells[3] || "").trim();
+  const { hasUnit, hasQty, quantity: qtyFromCells } = article33UnitQty(cells);
   const qtyCell = (cells[4] || "").trim();
-  const hasUnit = /^(шт|штук)/i.test(unitCell);
-  const hasQty = /^\d+$/.test(qtyCell);
+  const hasUnitLegacy = /^(шт|штук)/i.test((cells[3] || "").trim());
+  const hasQtyLegacy = /^\d+$/.test(qtyCell);
 
   if (
     nameCell.length >= 8 &&
     !isKtruCode(nameCell) &&
     !isMaterialCompositionText(nameCell) &&
-    (hasUnit || hasQty)
+    (hasUnit || hasQty || hasUnitLegacy || hasQtyLegacy)
   ) {
-    const quantity = hasQty ? parseInt(qtyCell, 10) : 0;
-    const unit = hasUnit ? "шт" : "шт";
+    const quantity = qtyFromCells || (hasQtyLegacy ? parseInt(qtyCell, 10) : 0);
+    const unit = hasUnit || hasUnitLegacy ? "шт" : "шт";
     const charName = (cells[5] || "").trim();
     const charVal = (cells[6] || "").trim();
     let inlineChar: { name: string; value: string } | undefined;
@@ -573,7 +805,7 @@ function isArticle33ProductRow(cells: string[]): {
     if (isMaterialCompositionText(cleaned)) continue;
     if (
       looksLikeProductName(cleaned) ||
-      /^(простын|чехол|халат|салфет|маск|перчат|бахил|костюм|набор|комплект|шапоч)/i.test(cleaned)
+      /^(простын|чехол|халат|салфет|маск|перчат|бахил|костюм|набор|комплект|шапоч|материал\s+для)/i.test(cleaned)
     ) {
       candidates.push(cleaned);
     }

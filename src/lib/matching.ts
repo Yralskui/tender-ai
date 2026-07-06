@@ -23,6 +23,8 @@ import {
   isLabIvdLine,
   isMedicalConnectorLine,
   isSurgicalCapLine,
+  isSterilizationContainerLine,
+  isSterileFilmLine,
   isTextileProduct,
   normalizeMatchText,
   sterilityPreferencesConflict,
@@ -256,6 +258,7 @@ function wordsOverlap(a: string, b: string): boolean {
   if (/^однораз/i.test(a) && /^однораз/i.test(b)) return false;
   if (/^хирург/i.test(a) && /^хирург/i.test(b)) return false;
   if (/^процедур/i.test(a) && /^процедур/i.test(b)) return false;
+  if (/^стерил/i.test(a) && /^стерил/i.test(b) && a !== b) return false;
   if (a.includes(b) || b.includes(a)) return true;
   if (a.length >= 7 && b.length >= 7 && a.slice(0, 6) === b.slice(0, 6)) return true;
   return false;
@@ -603,6 +606,21 @@ function specMatchesCatalog(
     candidates = coverPool;
   }
 
+  if (isSterilizationContainerLine(spec)) {
+    const containerPool = products.filter(
+      (p) => isSterilizationContainerLine(p) || /контейнер/i.test(normalizeMatchText(p))
+    );
+    if (containerPool.length === 0) {
+      return {
+        matched: false,
+        partial: false,
+        note: "Контейнер для стерилизации — в РУ нет контейнеров, только другая номенклатура",
+        matchedProduct: null,
+      };
+    }
+    candidates = containerPool;
+  }
+
   if (isAntisepticWipeLine(spec)) {
     const wipePool = products.filter((p) => /салфет/i.test(normalizeMatchText(p)));
     if (wipePool.length === 0) {
@@ -688,6 +706,8 @@ function specMatchesCatalog(
 
     if (isUltrasoundProbeCoverLine(spec) && isMedicalGownLine(product)) continue;
     if (isMedicalGownLine(spec) && isUltrasoundProbeCoverLine(product)) continue;
+    if (isSterilizationContainerLine(spec) && isSterileFilmLine(product)) continue;
+    if (isSterileFilmLine(spec) && isSterilizationContainerLine(product)) continue;
 
     if (isStrongGownMatch(spec, product) && !isMedicalLinenSetLine(spec)) {
       return applyDimensionCheck(spec, product, structured, {
@@ -775,6 +795,14 @@ function specMatchesCatalog(
     const partialFamilies = familiesForMatchLine(bestPartial.product);
     if (!familiesAreCompatible(specFamilies, partialFamilies)) {
       return { matched: false, partial: false, note: "Другой вид изделий — не ваше РУ", matchedProduct: null };
+    }
+    if (isSterilizationContainerLine(spec) && isSterileFilmLine(bestPartial.product)) {
+      return {
+        matched: false,
+        partial: false,
+        note: "Контейнер для стерилизации — в РУ нет контейнеров, только другая номенклатура",
+        matchedProduct: null,
+      };
     }
     if (!textileTypesCompatible(spec, bestPartial.product)) {
       return {

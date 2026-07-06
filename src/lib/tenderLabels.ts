@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { purgeExpiredTenderIfUnlabeled } from "@/lib/tenderMaintenance";
 
 export const DEFAULT_TENDER_LABELS = [
   { name: "Интересно", color: "#2563eb", sortOrder: 0 },
@@ -30,6 +31,15 @@ export async function listTenderLabelAssignments(companyId: string, tenderId: st
     include: { label: true },
     orderBy: { createdAt: "asc" },
   });
+}
+
+/** Сколько закупок с метками есть в базе (включая просроченные) */
+export async function countTaggedTendersForCompany(companyId: string): Promise<number> {
+  const rows = await prisma.tenderLabelAssignment.groupBy({
+    by: ["tenderId"],
+    where: { companyId },
+  });
+  return rows.length;
 }
 
 export async function listTenderIdsByLabel(companyId: string, labelId: string): Promise<string[]> {
@@ -100,6 +110,16 @@ export async function removeTenderLabel(companyId: string, tenderId: string, lab
   await prisma.tenderLabelAssignment.deleteMany({
     where: { companyId, tenderId, labelId },
   });
+
+  const remainingForCompany = await prisma.tenderLabelAssignment.count({
+    where: { companyId, tenderId },
+  });
+  if (remainingForCompany > 0) return;
+
+  const remainingGlobal = await prisma.tenderLabelAssignment.count({ where: { tenderId } });
+  if (remainingGlobal === 0) {
+    await purgeExpiredTenderIfUnlabeled(prisma, tenderId);
+  }
 }
 
 export async function listTenderLabelAssignmentsForTenders(

@@ -37,7 +37,7 @@ function createPrismaClient() {
 }
 
 /** Увеличивать после prisma migrate / db push, чтобы dev hot-reload подхватил новые поля. */
-const PRISMA_SCHEMA_GENERATION = 8;
+const PRISMA_SCHEMA_GENERATION = 9;
 
 /** После prisma db push / migrate dev-сервер держит старый клиент без новых моделей. */
 function isPrismaClientStale(client: PrismaClient): boolean {

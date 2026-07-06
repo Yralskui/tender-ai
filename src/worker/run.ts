@@ -12,6 +12,9 @@ import { probeZakupkiTls } from "@/lib/zakupkiQueue";
 import { runAutoSyncCycle } from "@/lib/autoSyncPipeline";
 import { enrichPendingTendersInBackground, getTzEnrichmentState } from "@/lib/tzEnrichmentJob";
 import { runNotificationMaintenance } from "@/lib/notificationJobs";
+import { runTenderMaintenance } from "@/lib/tenderMaintenance";
+import { prisma } from "@/lib/prisma";
+import { invalidateTenderCountCache } from "@/lib/tenderQuery";
 import { getAutoSyncIntervalMs } from "@/lib/autoSyncState";
 import { dequeueDocumentAnalysisJob } from "@/lib/documentJobQueue";
 import { processDocumentAnalysisJob } from "@/lib/documentAnalysisWorker";
@@ -53,6 +56,15 @@ async function tick() {
   tickCount += 1;
 
   try {
+    const maintenance = await runTenderMaintenance(prisma);
+    if (maintenance.expiredTendersDeleted > 0) {
+      invalidateTenderCountCache().catch(() => {});
+      log("maintenance", {
+        expiredDeleted: maintenance.expiredTendersDeleted,
+        cacheDirsRemoved: maintenance.expiredCacheDirsRemoved + maintenance.orphanCacheDirsRemoved,
+      });
+    }
+
     const sync = await runAutoSyncCycle({ force: false });
     if (!sync.skipped) {
       log("sync", { message: sync.message });

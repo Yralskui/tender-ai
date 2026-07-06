@@ -8,7 +8,7 @@ import { mapCompanyDocuments } from "@/lib/matching";
 import { focusSummary, buildCompanyFocus } from "@/lib/companyFocus";
 import {
   listCompanyTenderLabels,
-  listAllTaggedTenderIds,
+  countTaggedTendersForCompany,
   countAssignmentsByLabel,
 } from "@/lib/tenderLabels";
 import { loadTenderFeedPage, type PageFeedMode } from "@/lib/tenderFeedPage";
@@ -101,10 +101,10 @@ export default async function TendersPage({
   const documents = user.company ? await loadDocumentsForMatching(user.company.id) : [];
   perf.step("documents", { count: documents.length });
 
-  const [tenderLabels, labelCounts, allTaggedIds, feedPage] = await Promise.all([
+  const [tenderLabels, labelCounts, taggedTotal, feedPage] = await Promise.all([
     companyId ? listCompanyTenderLabels(companyId) : Promise.resolve([]),
     companyId ? countAssignmentsByLabel(companyId) : Promise.resolve(new Map<string, number>()),
-    companyId ? listAllTaggedTenderIds(companyId) : Promise.resolve([] as string[]),
+    companyId ? countTaggedTendersForCompany(companyId) : Promise.resolve(0),
     loadTenderFeedPage({
       okvedCodes,
       documents,
@@ -166,7 +166,7 @@ export default async function TendersPage({
   if (totalInDb < 500) {
     hintLines.push(`В базе ${totalInDb} — «+ каталог» подтянет ещё с ЕИС`);
   }
-  hintLines.push("Истёкшие без метки скрыты и удаляются при синхронизации; с меткой — в разделе «Метки»");
+  hintLines.push("Истёкшие без метки скрыты в основной ленте и удаляются при синхронизации; с меткой остаются в разделе «С метками»");
   hintLines.push("База обновляется автоматически каждые ~20 мин (скачивание с ЕИС + разбор ТЗ)");
   if (!hasProfile) {
     hintLines.push("Заполните профиль — подбор станет точнее");
@@ -203,7 +203,7 @@ export default async function TendersPage({
                   <span className="text-amber-900 font-medium">
                     {activeLabel
                       ? `Метка «${activeLabel.name}» — ${feedPage.items.length} из ${activeLabel.count}`
-                      : `Все с метками — ${feedPage.taggedTotal ?? allTaggedIds.length}`}
+                      : `Все с метками — ${feedPage.taggedTotal ?? taggedTotal}`}
                   </span>
                 ) : (
                   <span>
@@ -278,7 +278,7 @@ export default async function TendersPage({
               labels={labelsWithCounts}
               feedMode={feedMode}
               activeTagId={tagId}
-              taggedTotal={allTaggedIds.length}
+              taggedTotal={taggedTotal}
             />
           )}
 

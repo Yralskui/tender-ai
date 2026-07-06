@@ -1,9 +1,10 @@
-"use client";
+﻿"use client";
 import { useState, useMemo } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Building2, Save, Loader2, CheckCircle, MapPin, DollarSign, FileText, Tag, Palette } from "lucide-react";
 import ThemeToggle from "@/components/ThemeToggle";
+import DeleteAccountSection from "./DeleteAccountSection";
 import { regionOptionsForSelect } from "@/lib/regions";
 import NotificationPrefsPanel, {
   type NotificationPrefsState,
@@ -111,7 +112,7 @@ export default function ProfileClient({ user, notificationPrefs, notificationHis
   }
 
   return (
-    <main className="flex-1 p-8 max-w-3xl">
+    <main className="flex-1 min-h-0 overflow-y-auto p-8 max-w-3xl pb-16">
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-slate-900 mb-1">Профиль компании</h1>
         <p className="text-slate-600">Заполните информацию — AI использует её для точного анализа тендеров</p>
@@ -309,7 +310,7 @@ export default function ProfileClient({ user, notificationPrefs, notificationHis
           />
         </div>
 
-        <div className="flex items-center gap-4">
+        <div className="flex flex-wrap items-center gap-4 pt-2">
           <button
             type="submit"
             disabled={saving}
@@ -319,12 +320,16 @@ export default function ProfileClient({ user, notificationPrefs, notificationHis
             {saving ? "Сохраняем..." : "Сохранить профиль"}
           </button>
           {saved && (
-            <div className="flex items-center gap-2 text-sm text-emerald-600 animate-fade-in">
+            <div className="flex items-center gap-2 text-sm text-emerald-600 dark:text-emerald-400 animate-fade-in">
               <CheckCircle size={16} /> Сохранено!
             </div>
           )}
         </div>
       </form>
+
+      <div className="mt-6 mb-4">
+        <DeleteAccountSection email={user.email} />
+      </div>
     </main>
   );
 }

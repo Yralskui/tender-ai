@@ -45,6 +45,7 @@ const FAMILY_PATTERNS: Record<Exclude<ProductFamily, "unknown">, RegExp[]> = {
     /шприц/i, /игл\w*/i, /перчат/i, /катетер/i, /бинт/i, /шовн/i, /лигатур/i,
     /мешк.*отход/i, /отходов\s+класса/i, /медицинских\s+отходов/i,
     /коннектор/i, /крестообразн/i, /luer/i, /люер/i, /фитинг/i, /переходник/i, /адаптер/i,
+    /плёнк/i, /пленк/i,
   ],
   medical_lab_ivd: [
     /зонд/i, /пцр/i, /пцр-диагност/i, /микропробир/i, /пробирк/i,
@@ -54,7 +55,7 @@ const FAMILY_PATTERNS: Record<Exclude<ProductFamily, "unknown">, RegExp[]> = {
   ],
   medical_equipment: [
     /аппарат/i, /оборудован/i, /установк/i, /сканер/i, /рентген/i, /узи\b/i,
-    /стерилизатор/i, /анализатор/i,
+    /стерилизатор/i, /анализатор/i, /контейнер/i,
     /устройств\w*\s+для\s+печат/i, /печат\w*\s+монохром/i, /медицинских\s+изображен/i,
     /принтер/i, /плоттер/i, /дижитайзер/i, /драй\s*фильм/i,
   ],
@@ -72,6 +73,7 @@ export const WEAK_MATCH_WORDS = new Set([
   "электро", "электрокардиос", "электрокардиостимулятор", "кардио", "сердечно",
   "медицинский", "медицинское", "медицинские", "медицинских", "медицинской", "медицинского",
   "медицинским", "медицинская", "медицинские", "стерильный", "стерильные",
+  "стерилизации", "стерилизация", "стерилизацию", "стерильная", "стерильной", "стерильную",
   "комплект", "комплектом", "комплекта", "комплекте", "комплекту", "универсальный", "оборудования", "оборудование",
   "оказание", "услуг", "услуги", "осмотров", "осмотр", "проведению", "проведение",
   "клинической", "больницы", "скорой", "помощи", "нужд", "материала",
@@ -204,6 +206,18 @@ export function isSurgicalSuitLine(text: string): boolean {
   return /рубашк.*брюк|брюк.*рубашк|состав\s+костюма/i.test(n);
 }
 
+
+/** Контейнер для стерилизации (кассета, лоток) — не плёнка и не стерилизатор-аппарат */
+export function isSterilizationContainerLine(text: string): boolean {
+  const n = normalizeMatchText(text);
+  return /контейнер/i.test(n) && /стерилиз/i.test(n);
+}
+
+/** Стерильная плёнка / упаковочная плёнка */
+export function isSterileFilmLine(text: string): boolean {
+  const n = normalizeMatchText(text);
+  return /плёнк|пленк/i.test(n);
+}
 
 export function normalizeMatchText(s: string): string {
   return s.toLowerCase().replace(/[^\p{L}\d\s]/gu, " ").replace(/\s+/g, " ").trim();
@@ -352,6 +366,7 @@ export function familiesAreCompatible(
   const tenderConsumable = tenderFamilies.has("medical_consumable");
   const catalogConsumable = catalogFamilies.has("medical_consumable");
   if (tenderConsumable && !tenderTextile && catalogTextile && !catalogConsumable) return false;
+  if (tenderEquipment && catalogConsumable && !catalogFamilies.has("medical_equipment")) return false;
 
   return true;
 }

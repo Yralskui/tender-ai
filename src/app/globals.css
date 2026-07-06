@@ -62,6 +62,20 @@ html.dark {
   background-color: var(--canvas);
   color: var(--text);
   overflow-x: hidden;
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
+}
+
+.app-shell input,
+.app-shell textarea,
+.app-shell select,
+.app-shell [contenteditable="true"],
+.app-shell .allow-text-select,
+.app-shell .allow-text-select * {
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: auto;
 }
 
 .app-main {
@@ -122,6 +136,54 @@ html.dark {
 
 .btn-primary:hover {
   opacity: 0.92;
+}
+
+.btn-danger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  background-color: #dc2626 !important;
+  color: #ffffff !important;
+  border: 1px solid #b91c1c;
+  border-radius: 10px;
+  font-weight: 600;
+  transition: background-color 0.15s, opacity 0.15s;
+}
+
+.btn-danger:hover {
+  background-color: #ef4444 !important;
+}
+
+.btn-danger:disabled {
+  opacity: 0.5;
+}
+
+.btn-cancel {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  background-color: #f1f5f9 !important;
+  color: #1e293b !important;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  font-weight: 500;
+  transition: background-color 0.15s;
+}
+
+.btn-cancel:hover {
+  background-color: #e2e8f0 !important;
+}
+
+html.dark .btn-cancel {
+  background-color: #475569 !important;
+  color: #f8fafc !important;
+  border-color: #64748b;
+}
+
+html.dark .btn-cancel:hover {
+  background-color: #64748b !important;
 }
 
 .btn-ghost {
