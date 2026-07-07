@@ -7,7 +7,7 @@ import { isMedicalTender, MEDICAL_TENDER_DOCUMENTS, MEDICAL_KEYWORDS } from "@/l
 import type { CompanyFocus } from "@/lib/companyFocus";
 import { scoreTenderRelevance } from "@/lib/companyFocus";
 import { enrichNoticeFromTzDocuments, enrichNoticeFromTzCache, type EnrichTzOptions, type ParsedTzDocument } from "@/lib/zakupkiDocuments";
-import { decodeHtmlEntities, normalizeTzSpecText, repairFragmentedRussian } from "@/lib/textNormalize";
+import { decodeHtmlEntities, normalizeTzSpecText, repairFragmentedRussian, stripEisMarkup } from "@/lib/textNormalize";
 import { isGarbageCharacteristic } from "@/lib/tzSanitizer";
 import { inferProductsFromTzData } from "@/lib/tzNomenclature";
 import { parseNationalRegimeFromNoticeHtml, type StoredNationalRegime } from "@/lib/nationalRegime";
@@ -119,13 +119,24 @@ function mergeSearchQueries(
 }
 
 function stripHtml(html: string): string {
-  return decodeHtmlEntities(
-    html
-      .replace(/<br\s*\/?>/gi, " ")
-      .replace(/<[^>]+>/g, " ")
-      .replace(/\s+/g, " ")
-      .trim()
+  return stripEisMarkup(html);
+}
+
+function extractSectionInfo(html: string, sectionTitle: string): string {
+  const escaped = sectionTitle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const rich = new RegExp(
+    `section__title">\\s*${escaped}\\s*<\\/span>\\s*<span class="section__info">([\\s\\S]*?)<\\/span>`,
+    "i"
   );
+  const richMatch = html.match(rich);
+  if (richMatch) return stripEisMarkup(richMatch[1]);
+
+  const re = new RegExp(
+    `section__title">\\s*${escaped}\\s*<\\/span>[\\s\\S]*?section__info">([\\s\\S]*?)<\\/`,
+    "i"
+  );
+  const m = html.match(re);
+  return m ? stripEisMarkup(m[1]) : "";
 }
 
 function parseRussianDate(value: string): Date | null {
@@ -212,15 +223,6 @@ export function parseSearchResultsHtml(html: string): ZakupkiSearchEntry[] {
   return results;
 }
 
-function extractSectionInfo(html: string, sectionTitle: string): string {
-  const re = new RegExp(
-    `section__title">\\s*${sectionTitle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*<\\/span>[\\s\\S]*?section__info">([^<]+)`,
-    "i"
-  );
-  const m = html.match(re);
-  return m ? stripHtml(m[1]) : "";
-}
-
 function isBudgetNoise(text: string): boolean {
   return (
     text.length > 120 ||
@@ -298,9 +300,11 @@ export function parseNoticeCommonInfoHtml(html: string): ZakupkiNoticeDetails {
 
   const customerName = (() => {
     const org = extractSectionInfo(html, "Размещение осуществляет");
-    if (org && org.length > 5) return org.replace(/^Заказчик\s*/i, "").trim();
+    if (org && org.length > 5 && !/^заказчик$/i.test(org)) return org.replace(/^Заказчик\s*/i, "").trim();
     const org2 = extractSectionInfo(html, "Организация, осуществляющая размещение");
-    return org2.replace(/^Заказчик\s*/i, "").trim();
+    const cleaned = org2.replace(/^Заказчик\s*/i, "").trim();
+    if (cleaned.length > 5 && !/^заказчик$/i.test(cleaned)) return cleaned;
+    return "";
   })();
 
   const region = extractSectionInfo(html, "Регион");
@@ -548,8 +552,8 @@ export function toImportedTenderFromSearch(
   entry: ZakupkiSearchEntry,
   meta: { category: string; okved: string }
 ): ImportedTender {
-  const title = repairFragmentedRussian(entry.title || `Закупка №${entry.regNumber}`);
-  const customerName = entry.customerName || "Государственный заказчик";
+  const title = repairFragmentedRussian(stripEisMarkup(entry.title || `Закупка №${entry.regNumber}`));
+  const customerName = stripEisMarkup(entry.customerName || "Государственный заказчик");
   const productSpecs: string[] = [];
 
   return {
@@ -611,7 +615,7 @@ export function toImportedTender(
   meta: { category: string; okved: string }
 ): ImportedTender {
   const title = details.title || entry.title;
-  const customerName = details.customerName || entry.customerName;
+  const customerName = stripEisMarkup(details.customerName || entry.customerName);
   const region = details.region || "Россия";
   const publishedAt = details.publishedAt || entry.publishedAt;
   const deadline = details.deadline || entry.deadline;

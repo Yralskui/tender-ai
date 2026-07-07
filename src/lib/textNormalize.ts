@@ -36,6 +36,24 @@ export function decodeHtmlEntities(text: string): string {
   return out;
 }
 
+/** Убирает HTML/подсветку поиска ЕИС из текста карточки (заказчик, название) */
+export function stripEisMarkup(text: string): string {
+  if (!text) return "";
+
+  let out = text;
+  for (let i = 0; i < 4; i++) {
+    const next = decodeHtmlEntities(out)
+      .replace(/<br\s*\/?>/gi, " ")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (next === out) break;
+    out = next;
+  }
+
+  return repairFragmentedRussian(out);
+}
+
 /** Слова, которые нельзя «склеивать» с предыдущим фрагментом при восстановлении DOCX */
 const REPAIR_NO_MERGE = new Set(
   "для из на при или не от по под над без см мм кг шт с в к у о а и да нет со об до за ли же бы ни про без два две три одной другой собой имеет должен более менее равно эквивалент тип типа пару ленты элементы квадратный наметр грамм процедур операций количеством жидкости отделяемой выделяемой изготовлен перекрывают фиксирующие материала завязок крючками петлями хирургический стерильный нестерильный тз №".split(

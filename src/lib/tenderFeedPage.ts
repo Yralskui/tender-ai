@@ -33,6 +33,7 @@ import {
   rerankTenderForCompanyCache,
 } from "@/lib/tenderFeedCache";
 import { createPerfTimer } from "@/lib/perfLog";
+import { stripEisMarkup } from "@/lib/textNormalize";
 import {
   buildCachedMatchOrderBy,
   buildFeedTenderWhere,
@@ -99,8 +100,8 @@ function matchRowToCard(
   return {
     id: tender.id,
     externalId: tender.externalId,
-    title: tender.title,
-    customerName: tender.customerName,
+    title: stripEisMarkup(tender.title),
+    customerName: stripEisMarkup(tender.customerName),
     region: tender.region,
     category: tender.category,
     price: tender.price,
@@ -128,8 +129,8 @@ function rankedToCard(t: RankedTender<FeedRow>, hasCatalog: boolean): Omit<Tende
   return {
     id: t.id!,
     externalId: t.externalId!,
-    title: t.title!,
-    customerName: t.customerName,
+    title: stripEisMarkup(t.title!),
+    customerName: stripEisMarkup(t.customerName),
     region: t.region,
     category: t.category,
     price: t.price,

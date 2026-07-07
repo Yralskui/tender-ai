@@ -39,6 +39,7 @@ const details = {
   tzDocuments: tz.documents,
   tzParsedFromFile: true,
   tzProducts: tz.products,
+  tzVolumes: tz.tzVolumes,
 };
 
 const imported = toImportedTender(entry, details, {

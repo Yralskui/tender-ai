@@ -209,7 +209,10 @@ export function nmckItemsToParseResult(
 }
 
 export function isNmckExcelName(name: string): boolean {
-  return /нмцк|нмц|обоснован/i.test(name) && /\.xlsx?(?:\.zip)?$/i.test(name);
+  return (
+    (/нмцк|нмц|обоснован|расчет\s+нмц|нсц/i.test(name) || /^нсц/i.test(name)) &&
+    /\.xlsx?(?:\.zip)?$/i.test(name)
+  );
 }
 
 /** DOCX «Обоснование НМЦК» с таблицей: № | Наименование | ед. | кол-во */

@@ -17,6 +17,7 @@ import { parseTzText, type TzParseResult } from "@/lib/tzParser";
 import { sanitizeTzParseResult, scoreTzParseQuality } from "@/lib/tzSanitizer";
 import { deriveBlockVariantName, resolveBlockProductLabel } from "@/lib/ktruProductVariants";
 import { parseMedicalTextileOozXlsx } from "@/lib/medicalTextileOozParser";
+import { parseOozLineVolumesFromText, pickRicherTzVolumes, deriveTzVolumesFromRequirements } from "@/lib/tzVolumes";
 import { isPlaceholderPositionName, looksLikeProductName } from "@/lib/tzSanitizer";
 
 export interface DocumentParseResult extends TzParseResult {
@@ -116,9 +117,17 @@ export function parseDocumentAttachment(
     const text = extractTextFromXlsxBuffer(workBuffer);
     if (!text) return null;
     const parsed = sanitizeTzParseResult(parseTzText(text));
+    const lineVolumes = parseOozLineVolumesFromText(text);
+    const specVolumes = deriveTzVolumesFromRequirements({
+      productSpecs: parsed.productSpecs,
+      tzProducts: parsed.products,
+      technicalAssignment: parsed.technicalAssignment,
+    });
+    const tzVolumes = pickRicherTzVolumes(parsed.tzVolumes, lineVolumes, specVolumes);
     return {
       ...parsed,
-      quality: scoreTzParseQuality(parsed),
+      tzVolumes,
+      quality: scoreTzParseQuality(parsed) + (lineVolumes.length > 0 ? 15 : 0),
       source: "xlsx-text",
     };
   }
@@ -241,12 +250,7 @@ export function mergeNmckAndOoz(
           ? oozProducts
           : nmckProducts;
 
-  const tzVolumes =
-    (ooz?.tzVolumes?.length ?? 0) >= (nmck.tzVolumes?.length ?? 0)
-      ? ooz?.tzVolumes
-      : nmck.tzVolumes?.length
-        ? nmck.tzVolumes
-        : ooz?.tzVolumes;
+  const tzVolumes = pickRicherTzVolumes(ooz?.tzVolumes, nmck.tzVolumes);
 
   return {
     products,

@@ -434,6 +434,11 @@ function isOozDocumentName(name: string): boolean {
   return /описание|объект\s+закупки|характеристик|техническ.*задани|\bтз\b/i.test(name);
 }
 
+function tryNmckItemsFromSpreadsheet(buffer: Buffer, fileName: string): NmckLineItem[] {
+  if (!/\.xlsx?$/i.test(fileName) || isOozDocumentName(fileName)) return [];
+  return parseNmckExcelProducts(resolveOfficeBuffer(buffer));
+}
+
 function resolveEffectiveTzParse(
   bestOoz: DocumentParseResult | null,
   bestAny: DocumentParseResult | null,
@@ -496,6 +501,18 @@ async function buildEnrichmentFromParsedFiles(
         nmckItems = items;
         docMeta.parsed = true;
         docMeta.specCount = items.length;
+        nmckDoc = docMeta;
+      }
+      documents.push(docMeta);
+      continue;
+    }
+
+    const nmckFromXlsx = tryNmckItemsFromSpreadsheet(file.buffer, file.name);
+    if (nmckFromXlsx.length > 0) {
+      if (nmckFromXlsx.length > nmckItems.length) {
+        nmckItems = nmckFromXlsx;
+        docMeta.parsed = true;
+        docMeta.specCount = nmckFromXlsx.length;
         nmckDoc = docMeta;
       }
       documents.push(docMeta);
@@ -705,6 +722,17 @@ export async function enrichNoticeFromTzDocuments(
           nmckItems = items;
           docMeta.parsed = true;
           docMeta.specCount = items.length;
+          nmckDoc = docMeta;
+        }
+        continue;
+      }
+
+      const nmckFromXlsx = tryNmckItemsFromSpreadsheet(buffer, attachment.name);
+      if (nmckFromXlsx.length > 0) {
+        if (nmckFromXlsx.length > nmckItems.length) {
+          nmckItems = nmckFromXlsx;
+          docMeta.parsed = true;
+          docMeta.specCount = nmckFromXlsx.length;
           nmckDoc = docMeta;
         }
         continue;

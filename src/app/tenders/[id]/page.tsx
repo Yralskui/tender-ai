@@ -15,7 +15,7 @@ import {
 import { analyzeMatch, filterDocsForTenderMatch, mapCompanyDocuments } from "@/lib/matching";
 import { loadCompanyCatalogProducts, mergeCompanyCatalogSources } from "@/lib/catalogProductSync";
 import { buildProcurementBundles, blockProcurementBundleMatches } from "@/lib/tzProcurementBundles";
-import { normalizeStoredRequirements } from "@/lib/textNormalize";
+import { normalizeStoredRequirements, stripEisMarkup } from "@/lib/textNormalize";
 import { resolveTzVolumes, summarizeProcurementVolume } from "@/lib/tzVolumes";
 import {
   fetchTzVolumesFromEisNotice,
@@ -74,6 +74,9 @@ export default async function TenderPage({
   const tender = await prisma.tender.findUnique({ where: { id } });
   perf.step("tender.findUnique");
   if (!tender) notFound();
+
+  const displayTitle = stripEisMarkup(tender.title);
+  const displayCustomer = stripEisMarkup(tender.customerName);
 
   const companyId = user.company?.id;
   const [documents, tenderLabels, labelAssignments, catalogRows, supplierPriceCatalog] = await Promise.all([
@@ -346,8 +349,8 @@ export default async function TenderPage({
                   {days > 0 ? `${days} дней до дедлайна` : "Дедлайн истёк"}
                 </span>
               </div>
-              <h1 className="text-xl font-bold text-slate-900 mb-2">{tender.title}</h1>
-              <p className="text-slate-600 text-sm mb-1">{tender.customerName}</p>
+              <h1 className="text-xl font-bold text-slate-900 mb-2">{displayTitle}</h1>
+              <p className="text-slate-600 text-sm mb-1">{displayCustomer}</p>
               <p className="text-slate-500 text-sm mb-2">{tender.region}</p>
               {companyId && (
                 <TenderLabelsPanel
@@ -472,7 +475,7 @@ export default async function TenderPage({
 
             <div id="customer" className="rounded-2xl border border-slate-200 p-5 app-card">
               <h3 className="font-semibold text-slate-900 mb-3 text-sm">Заказчик и сроки</h3>
-              <p className="text-sm text-slate-800 font-medium mb-1">{tender.customerName}</p>
+              <p className="text-sm text-slate-800 font-medium mb-1">{displayCustomer}</p>
               <p className="text-xs text-slate-500 mb-3">{tender.region}</p>
               <div className="space-y-2 text-sm border-t border-slate-100 pt-3">
                 <div className="flex justify-between">

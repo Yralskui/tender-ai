@@ -205,6 +205,7 @@ export function buildProcurementBundles(
   const bundleMap = new Map<string, ProcurementBundle>();
   let currentName = "";
   let currentLinePosition = "";
+  let activeBundle: ProcurementBundle | undefined;
   let position = 0;
   const orphanSpecs: Array<{ field: string; value: string; raw: string }> = [];
   const attachedOrphans = new Set<string>();
@@ -311,10 +312,15 @@ export function buildProcurementBundles(
   for (const raw of specs) {
     const spec = normalizeTzSpecText(raw);
     if (!spec || spec.length < 4) continue;
-    if (/^Объём закупки:/i.test(spec)) continue;
+    if (/^Объём закупки:/i.test(spec)) {
+      currentLinePosition = "";
+      activeBundle = undefined;
+      continue;
+    }
 
     if (TZ_POSITION_NUM_RE.test(spec)) {
       currentLinePosition = parseTzPositionNumber(spec) || "";
+      activeBundle = currentLinePosition ? findBundleByPosition(currentLinePosition) : undefined;
       continue;
     }
 
@@ -322,8 +328,21 @@ export function buildProcurementBundles(
     if (positionName) {
       currentName = labelFor(positionName, undefined, currentLinePosition || undefined);
       if (looksLikeProductName(currentName) || currentName.length >= 12) {
-        ensureBundle(currentName, undefined, currentLinePosition || undefined);
+        activeBundle = ensureBundle(currentName, undefined, currentLinePosition || undefined);
       }
+      continue;
+    }
+
+    const numberedSubItem = spec.match(/^(\d{1,2})\.\s+(.+?):\s*(\d{1,7})\s*$/);
+    if (numberedSubItem && !spec.includes(" — ")) {
+      const subName = numberedSubItem[2];
+      activeBundle =
+        (currentLinePosition ? findBundleByPosition(currentLinePosition) : undefined) ||
+        [...bundleMap.values()].find((b) => {
+          const sn = subName.toLowerCase();
+          const bn = b.name.toLowerCase();
+          return bn.includes(sn.slice(0, 24)) || sn.includes(bn.slice(0, 24));
+        });
       continue;
     }
 
@@ -349,6 +368,7 @@ export function buildProcurementBundles(
         ensureBundle(productLabel, undefined, currentLinePosition || undefined);
       pushCharacteristic(b, spec, split.charLabel, catalogProducts, catalogStructured);
       currentName = productLabel;
+      activeBundle = b;
       continue;
     }
 
@@ -364,6 +384,19 @@ export function buildProcurementBundles(
           field.length <= 120);
       if (isCharField && !spec.includes(" — ")) {
         if (isUsefulTzCharacteristic(spec, field, value)) {
+          const target =
+            activeBundle ||
+            (currentLinePosition ? findBundleByPosition(currentLinePosition) : undefined);
+          if (target) {
+            pushCharacteristic(
+              target,
+              spec,
+              `${field}: ${value}`,
+              catalogProducts,
+              catalogStructured
+            );
+            continue;
+          }
           const key = `${field.toLowerCase()}|${value.toLowerCase()}`;
           if (!attachedOrphans.has(key)) {
             attachedOrphans.add(key);
@@ -521,7 +554,11 @@ function findOrphanTargetBundle(
   );
   if (withSimilar.length === 1) return withSimilar[0];
 
-  return undefined;
+  if (/простын|салфет|бахил|чехол|лента|шапоч/i.test(fieldL)) {
+    return bundles.find((b) => /набор белья|простын|комплект/i.test(b.name));
+  }
+
+  return bundles[0];
 }
 
 export function blockProcurementBundleMatches(
