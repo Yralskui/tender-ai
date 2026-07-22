@@ -3,6 +3,10 @@
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { Sparkles, CheckCircle, AlertCircle, Database, Loader2 } from "lucide-react";
+import {
+  readSyncButtonVisible,
+  SYNC_BUTTON_VISIBILITY_EVENT,
+} from "@/lib/syncButtonVisibility";
 
 interface Props {
   className?: string;
@@ -15,6 +19,18 @@ export default function TendersSyncButton({ className = "", compact = false }: P
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [bgProgress, setBgProgress] = useState<string | null>(null);
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    setVisible(readSyncButtonVisible());
+    const onChange = () => setVisible(readSyncButtonVisible());
+    window.addEventListener(SYNC_BUTTON_VISIBILITY_EVENT, onChange);
+    window.addEventListener("storage", onChange);
+    return () => {
+      window.removeEventListener(SYNC_BUTTON_VISIBILITY_EVENT, onChange);
+      window.removeEventListener("storage", onChange);
+    };
+  }, []);
 
   const pollStatus = useCallback(async () => {
     try {
@@ -44,6 +60,7 @@ export default function TendersSyncButton({ className = "", compact = false }: P
   }, [router]);
 
   useEffect(() => {
+    if (!visible) return;
     let timer: ReturnType<typeof setInterval> | null = null;
     void pollStatus().then((busy) => {
       if (busy) setLoading("smart");
@@ -55,7 +72,9 @@ export default function TendersSyncButton({ className = "", compact = false }: P
     return () => {
       if (timer) clearInterval(timer);
     };
-  }, [pollStatus]);
+  }, [pollStatus, visible]);
+
+  if (!visible) return null;
 
   async function runSync(mode: "smart" | "catalog") {
     setLoading(mode);

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Building2, Save, Loader2, CheckCircle, MapPin, DollarSign, FileText, Tag, Palette } from "lucide-react";
 import ThemeToggle from "@/components/ThemeToggle";
+import SyncButtonVisibilityToggle from "@/components/SyncButtonVisibilityToggle";
 import DeleteAccountSection from "./DeleteAccountSection";
 import { regionOptionsForSelect } from "@/lib/regions";
 import NotificationPrefsPanel, {
@@ -125,6 +126,8 @@ export default function ProfileClient({ user, notificationPrefs, notificationHis
         <p className="text-sm text-slate-600 mb-4">Выберите светлую или тёмную тему — настройка сохранится в браузере</p>
         <ThemeToggle />
       </div>
+
+      <SyncButtonVisibilityToggle />
 
       <form onSubmit={handleSave} className="space-y-6">
         {error && (
