@@ -253,7 +253,7 @@ export function buildProcurementBundles(
       b = findBundleByPosition(linePos);
     }
     if (!b) {
-      if ((reqs.tzVolumes?.length ?? 0) > 1 && !linePos) {
+      if (!linePos) {
         const byName = [...bundleMap.values()].find(
           (c) => c.name.toLowerCase() === name.toLowerCase()
         );
@@ -362,6 +362,16 @@ export function buildProcurementBundles(
         isPlaceholderPositionName(split.product)) &&
       !isCharacteristicFieldName(split.product)
     ) {
+      // Строка без явного разделителя «Товар — Поле: Значение» — если уже есть активный
+      // набор, это скорее характеристика без префикса товара, а не новая позиция.
+      const fallbackTarget =
+        !spec.includes(" — ") &&
+        ((currentLinePosition ? findBundleByPosition(currentLinePosition) : undefined) || activeBundle);
+      if (fallbackTarget) {
+        pushCharacteristic(fallbackTarget, spec, `${split.product}: ${split.charLabel}`, catalogProducts, catalogStructured);
+        continue;
+      }
+
       const productLabel = labelFor(split.product, undefined, currentLinePosition || undefined);
       const b =
         (currentLinePosition ? findBundleByPosition(currentLinePosition) : undefined) ||

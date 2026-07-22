@@ -112,7 +112,7 @@ export default function ProfileClient({ user, notificationPrefs, notificationHis
   }
 
   return (
-    <main className="flex-1 min-h-0 overflow-y-auto p-8 max-w-3xl pb-16">
+    <main className="flex-1 min-h-0 overflow-y-auto p-8 max-w-3xl pb-16 allow-text-select">
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-slate-900 mb-1">Профиль компании</h1>
         <p className="text-slate-600">Заполните информацию — AI использует её для точного анализа тендеров</p>

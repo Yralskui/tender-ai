@@ -6,6 +6,7 @@ import { isKtruCode } from "@/lib/textNormalize";
 import { repairFragmentedRussian } from "@/lib/textNormalize";
 import { isPlaceholderPositionName, looksLikeProductName } from "@/lib/tzSanitizer";
 import { parseTzPositionName } from "@/lib/textNormalize";
+import type { TzVolume } from "@/lib/tzVolumes";
 
 const EQUIPMENT_TITLE_KEYWORDS =
   /рентген|томограф|ультразвук|узи|эндоскоп|дефибрилл|вентилятор|анестез|стерилиз|лазер|маммограф|флюорограф|диагност|монитор\s+пациент/i;
@@ -125,7 +126,7 @@ export function buildKtruNameMapFromSpecs(productSpecs: string[]): Map<string, s
 }
 
 export function resolveTzProductLabel(input: {
-  name: string;
+  name?: string;
   ktruCode?: string;
   position?: string;
   tenderTitle?: string;
@@ -176,13 +177,7 @@ export function applyResolvedTzNames(
     title?: string;
     productSpecs?: string[];
     tzProducts?: string[];
-    tzVolumes?: Array<{
-      name: string;
-      ktruCode?: string;
-      quantity: number;
-      unit: string;
-      position?: string;
-    }>;
+    tzVolumes?: TzVolume[];
   }
 ): void {
   const title = details.title?.trim();

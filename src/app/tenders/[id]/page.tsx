@@ -28,6 +28,7 @@ import TenderDocumentsPanel from "@/components/tender/TenderDocumentsPanel";
 import TenderLabelsPanel from "@/components/tender/TenderLabelsPanel";
 import TenderQuickActions from "@/components/tender/TenderQuickActions";
 import NationalRegimePanel from "@/components/tender/NationalRegimePanel";
+import DeliveryPlacesPanel from "@/components/tender/DeliveryPlacesPanel";
 import {
   buildCharacteristicMatches,
   extractCharacteristicSpecs,
@@ -295,7 +296,8 @@ export default async function TenderPage({
     tender.title,
     tender.price,
     supplierPriceCatalog.items,
-    supplierPriceCatalog.pricelists
+    supplierPriceCatalog.pricelists,
+    requirements.productSpecs || []
   );
   perf.step("economics", { lines: economics.lines.length, multiPricelist: economics.multiPricelist });
 
@@ -320,7 +322,7 @@ export default async function TenderPage({
   return (
     <div className="flex min-h-screen app-shell">
       <Sidebar />
-      <main className="flex-1 p-8 max-w-6xl">
+      <main className="flex-1 p-8 max-w-6xl allow-text-select">
         {/* Навигация */}
         <Link href={backHref} className="inline-flex items-center gap-2 text-slate-600 hover:text-slate-900 text-sm mb-6 transition-colors">
           <ArrowLeft size={16} />
@@ -449,6 +451,8 @@ export default async function TenderPage({
             )}
 
             <TenderEconomicsPanel economics={economics} />
+
+            <DeliveryPlacesPanel requirements={requirements} />
 
             <NationalRegimePanel requirements={requirements} nmck={tender.price} />
           </div>

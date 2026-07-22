@@ -71,7 +71,7 @@ export default async function GrowthPage() {
   return (
     <div className="flex min-h-screen app-shell">
       <Sidebar />
-      <main className="flex-1 p-8">
+      <main className="flex-1 p-8 allow-text-select">
         <div className="mb-8">
           <h1 className="text-2xl font-bold text-slate-900 mb-1">Карта роста компании</h1>
           <p className="text-slate-600">Какие документы получить чтобы открыть доступ к большему числу тендеров</p>

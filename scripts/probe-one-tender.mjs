@@ -20,7 +20,7 @@ for (const f of files) {
     console.log("\n=== RAW OOZ TEXT ===");
     console.log(text);
   }
-  const parsed = parseDocumentAttachment(buf, f);
+  const parsed = await parseDocumentAttachment(buf, f);
   console.log("\n===", f, "===");
   console.log("parsed:", parsed ? `${parsed.source} q=${parsed.quality}` : "null");
   if (!parsed) {

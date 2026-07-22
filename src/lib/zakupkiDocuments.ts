@@ -15,6 +15,7 @@ import {
 import { classifyProcurementDocument } from "@/lib/procurementDocumentGroups";
 import { zakupkiFetch } from "@/lib/zakupkiQueue";
 import { isPlaceholderPositionName, isUsefulTzCharacteristic, looksLikeProductName } from "@/lib/tzSanitizer";
+import type { TzVolume } from "@/lib/tzVolumes";
 
 export { classifyProcurementDocument, DOCUMENT_GROUP_LABELS } from "@/lib/procurementDocumentGroups";
 
@@ -48,7 +49,7 @@ export interface TzEnrichmentResult {
   ktruCodes: string[];
   documents: ParsedTzDocument[];
   tzParsedFromFile: boolean;
-  tzVolumes?: Array<{ name: string; ktruCode?: string; quantity: number; unit: string }>;
+  tzVolumes?: TzVolume[];
 }
 
 const TZ_NAME_SCORES: Array<{ re: RegExp; score: number }> = [
@@ -374,14 +375,26 @@ function mergeSpecs(htmlSpecs: string[], tzSpecs: string[]): string[] {
 
   const seen = new Set<string>();
   const result: string[] = [];
+  let hasGoodPositionName = false;
 
   for (const spec of [...tzSpecs, ...htmlToMerge]) {
     const trimmed = spec.replace(/\s+/g, " ").trim();
     if (!trimmed) continue;
 
     const lower = trimmed.toLowerCase();
-    const isPosition = /^позиция\s*тз/i.test(lower);
+    const isPosition = /^позиция\s*тз:/i.test(lower);
     const isVolume = /^объём закупки:/i.test(lower);
+
+    // Разные источники (файл ТЗ / каталог КТРУ ЕИС) могут дать по одной и той же позиции
+    // и нормальное название, и «Позиция N (поз. N)» — вторая строка не несёт пользы и только
+    // плодит лишние карточки в «Наборы и позиции ТЗ». Раз хорошее имя уже есть — плейсхолдер
+    // из другого источника для той же позиции просто не добавляем (а не только дедуп по тексту).
+    if (isPosition) {
+      const posName = trimmed.replace(/^Позиция\s*ТЗ:\s*/i, "").trim();
+      const isPlaceholder = isPlaceholderPositionName(posName);
+      if (isPlaceholder && hasGoodPositionName) continue;
+      if (!isPlaceholder) hasGoodPositionName = true;
+    }
 
     if (isPosition || isVolume) {
       const metaKey = isVolume ? `vol:${lower.replace(/\d+/g, "#")}` : lower;
@@ -460,9 +473,29 @@ function resolveEffectiveTzParse(
   const best = candidates[0];
   const html = htmlEis && htmlEis !== best ? htmlEis : null;
   if (html?.productBlocks?.length && (!best.productBlocks?.length || best.products?.length === 0)) {
-    return { ...best, productBlocks: html.productBlocks, products: html.products?.length ? html.products : best.products };
+    // productBlocks из html.eis всегда нужны (у best их может не быть вовсе), а вот products
+    // берём из html только если там реальные названия — иначе легко заменить нормальное
+    // "Ножницы хирургические..." на плейсхолдеры "Позиция N" из каталога КТРУ ЕИС.
+    const products = productNameQuality(html) > 0 ? html.products : best.products?.length ? best.products : html.products;
+    return { ...best, productBlocks: html.productBlocks, products };
   }
   return best;
+}
+
+/**
+ * Объём закупки часто лежит в другом файле, чем характеристики (напр. отдельное
+ * «Описание объекта закупки» с таблицей № | Наименование | Ед. | Кол-во, а сами
+ * характеристики — в файле по ст. 33 44-ФЗ). Если у победившего разбора нет
+ * объёма, но он нашёлся в другом разобранном файле — переносим его.
+ */
+function recoverMissingVolumes(
+  effectiveOoz: DocumentParseResult | null,
+  volumeCandidate: DocumentParseResult | null
+): DocumentParseResult | null {
+  if (!effectiveOoz || effectiveOoz.tzVolumes?.length || !volumeCandidate?.tzVolumes?.length) {
+    return effectiveOoz;
+  }
+  return { ...effectiveOoz, tzVolumes: volumeCandidate.tzVolumes };
 }
 
 async function buildEnrichmentFromParsedFiles(
@@ -477,6 +510,7 @@ async function buildEnrichmentFromParsedFiles(
   let bestAny: DocumentParseResult | null = null;
   let bestAnyDoc: ParsedTzDocument | null = null;
   let nmckDoc: ParsedTzDocument | null = null;
+  let volumeCandidate: DocumentParseResult | null = null;
 
   for (const file of files) {
     if (isContractDocument(file.name)) continue;
@@ -531,7 +565,7 @@ async function buildEnrichmentFromParsedFiles(
       continue;
     }
 
-    const parsed = parseDocumentAttachment(file.buffer, file.name);
+    const parsed = await parseDocumentAttachment(file.buffer, file.name);
     if (!parsed || parsed.productSpecs.length === 0) {
       documents.push(docMeta);
       continue;
@@ -552,11 +586,16 @@ async function buildEnrichmentFromParsedFiles(
         bestOozDoc = docMeta;
       }
     }
+
+    if ((parsed.tzVolumes?.length ?? 0) > (volumeCandidate?.tzVolumes?.length ?? 0)) volumeCandidate = parsed;
   }
 
-  const effectiveOoz = enrichParseWithEisCatalog(
-    resolveEffectiveTzParse(bestOoz, bestAny, options.htmlEisCatalog ?? null),
-    options.htmlEisCatalog ?? null
+  const effectiveOoz = recoverMissingVolumes(
+    enrichParseWithEisCatalog(
+      resolveEffectiveTzParse(bestOoz, bestAny, options.htmlEisCatalog ?? null),
+      options.htmlEisCatalog ?? null
+    ),
+    volumeCandidate
   );
   const bestParse = mergeNmckAndOoz(nmckItems, effectiveOoz);
   const bestDoc =
@@ -675,6 +714,7 @@ export async function enrichNoticeFromTzDocuments(
   let bestAny: DocumentParseResult | null = null;
   let bestAnyDoc: ParsedTzDocument | null = null;
   let nmckDoc: ParsedTzDocument | null = null;
+  let volumeCandidate: DocumentParseResult | null = null;
 
   // Фаза 1: скачиваем все вложения в кэш (для кнопок «Скачать» / архив).
   for (const attachment of allToDownload) {
@@ -749,7 +789,7 @@ export async function enrichNoticeFromTzDocuments(
         continue;
       }
 
-      const parsed = parseDocumentAttachment(buffer, attachment.name);
+      const parsed = await parseDocumentAttachment(buffer, attachment.name);
       if (!parsed || parsed.productSpecs.length === 0) continue;
 
       docMeta.parsed = parsed.quality >= 25;
@@ -766,6 +806,8 @@ export async function enrichNoticeFromTzDocuments(
           bestOozDoc = docMeta;
         }
       }
+
+      if ((parsed.tzVolumes?.length ?? 0) > (volumeCandidate?.tzVolumes?.length ?? 0)) volumeCandidate = parsed;
     } catch (e) {
       console.error(`TZ parse ${regNumber} ${attachment.name}:`, e);
     }
@@ -778,9 +820,12 @@ export async function enrichNoticeFromTzDocuments(
     return (order[ga] ?? 9) - (order[gb] ?? 9);
   });
 
-  const effectiveOoz = enrichParseWithEisCatalog(
-    resolveEffectiveTzParse(bestOoz, bestAny, options.htmlEisCatalog ?? null),
-    options.htmlEisCatalog ?? null
+  const effectiveOoz = recoverMissingVolumes(
+    enrichParseWithEisCatalog(
+      resolveEffectiveTzParse(bestOoz, bestAny, options.htmlEisCatalog ?? null),
+      options.htmlEisCatalog ?? null
+    ),
+    volumeCandidate
   );
   const bestParse = mergeNmckAndOoz(nmckItems, effectiveOoz);
   const bestDoc =

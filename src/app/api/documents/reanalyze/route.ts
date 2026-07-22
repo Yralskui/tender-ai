@@ -3,6 +3,7 @@ import { getSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { analyzeDocument, aiProvider } from "@/lib/aiAnalysis";
 import { saveDocumentAnalysis } from "@/lib/documentAnalysisJob";
+import { getAccessStatus } from "@/lib/subscription";
 
 export const maxDuration = 300;
 
@@ -17,6 +18,9 @@ export async function POST() {
   });
 
   if (!user?.company) return NextResponse.json({ error: "Компания не найдена" }, { status: 400 });
+  if (!getAccessStatus(user).hasAccess) {
+    return NextResponse.json({ error: "Требуется подписка" }, { status: 403 });
+  }
 
   let updated = 0;
   const results: Array<{ id: string; name: string; isRelevant: boolean; warning: string | null }> = [];

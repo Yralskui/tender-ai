@@ -1,13 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
+import { timingSafeEqual } from "crypto";
 import { prisma } from "@/lib/prisma";
 import { createPromoCode } from "@/lib/promoCodes";
+import type { PlanId } from "@/lib/pricing";
 
 const VALID_PLANS: PlanId[] = ["pro", "team"];
 
 function checkSupportKey(req: NextRequest): boolean {
   const key = process.env.SUPPORT_API_KEY?.trim();
   if (!key) return false;
-  return req.headers.get("x-support-key") === key;
+  const provided = req.headers.get("x-support-key") || "";
+  const a = Buffer.from(provided);
+  const b = Buffer.from(key);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
 }
 
 export async function GET(req: NextRequest) {

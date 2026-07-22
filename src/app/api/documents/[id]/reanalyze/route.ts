@@ -9,6 +9,7 @@ import { backgroundJobsInNext } from "@/lib/runtimeConfig";
 import { enqueueDocumentAnalysisJob } from "@/lib/documentJobQueue";
 import { ingestPricelistDocument } from "@/lib/supplierPriceSync";
 import { scheduleCompanyFeedCacheRebuild } from "@/lib/tenderFeedCache";
+import { getAccessStatus } from "@/lib/subscription";
 
 export const maxDuration = 300;
 
@@ -24,6 +25,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     include: { company: true },
   });
   if (!user?.company) return NextResponse.json({ error: "Компания не найдена" }, { status: 400 });
+  if (!getAccessStatus(user).hasAccess) {
+    return NextResponse.json({ error: "Требуется подписка" }, { status: 403 });
+  }
 
   const doc = await prisma.document.findUnique({ where: { id } });
   if (!doc || doc.companyId !== user.company.id) {

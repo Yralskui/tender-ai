@@ -60,6 +60,52 @@ interface RequirementsLike {
   ktruCodes?: string[];
   technicalAssignment?: string;
   tzVolumes?: Array<{ name: string; ktruCode?: string; quantity: number; unit: string; position?: string }>;
+  deliveryPlaces?: string[];
+}
+
+export interface DeliveryDestinationItem {
+  name?: string;
+  quantity?: number;
+  unit?: string;
+  position?: string;
+}
+
+export interface DeliveryDestination {
+  address: string;
+  items: DeliveryDestinationItem[];
+}
+
+/**
+ * Группирует адреса из «Место поставки товара…» по уникальному адресу — в извещении
+ * ЕИС адрес указывается один на позицию/строку НМЦК, в том же порядке, поэтому при
+ * совпадении числа адресов и объёмов можно сопоставить, что именно едет по какому адресу.
+ */
+export function buildDeliveryDestinations(requirements: RequirementsLike): DeliveryDestination[] {
+  const places = (requirements.deliveryPlaces || []).map((p) => p.trim()).filter(Boolean);
+  if (places.length === 0) return [];
+
+  const volumes = requirements.tzVolumes || [];
+  const canPair = volumes.length === places.length;
+
+  const byAddress = new Map<string, DeliveryDestination>();
+  places.forEach((address, i) => {
+    let dest = byAddress.get(address);
+    if (!dest) {
+      dest = { address, items: [] };
+      byAddress.set(address, dest);
+    }
+    if (canPair) {
+      const vol = volumes[i];
+      dest.items.push({
+        name: vol.name,
+        quantity: vol.quantity,
+        unit: vol.unit,
+        position: vol.position,
+      });
+    }
+  });
+
+  return [...byAddress.values()];
 }
 
 function isMetaSpec(line: string): boolean {

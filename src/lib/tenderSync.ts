@@ -108,11 +108,38 @@ export async function runTenderSync(options: RunTenderSyncOptions = {}): Promise
 
   for (const t of importResult.tenders) {
     const existing = await prisma.tender.findUnique({ where: { externalId: t.externalId } });
-    const reqRow = tenderRowFromRequirements(t.requirements as Record<string, unknown>);
+
+    // Быстрый/каталожный импорт (fastImport) всегда строит t.requirements через
+    // toImportedTenderFromSearch — голые данные из карточки поиска, без разбора ТЗ.
+    // Если у уже существующей закупки ТЗ УЖЕ разобрано (файл или карточка ЕИС дали
+    // реальные позиции), нельзя тупо перезаписывать requirements этим огрызком —
+    // иначе каждый повторный проход синка (в т.ч. фоновый, раз в ~20 мин) стирает
+    // результат уже проделанной работы по разбору ТЗ, откатывая закупку обратно
+    // в состояние "не разобрано".
+    let existingReqs: Record<string, unknown> | null = null;
+    if (existing) {
+      try {
+        existingReqs = JSON.parse(existing.requirements) as Record<string, unknown>;
+      } catch {
+        existingReqs = null;
+      }
+    }
+    const incomingIsBareImport = (t.requirements as Record<string, unknown>).importMode === "search_only";
+    const existingIsEnriched =
+      existingReqs?.tzParsedFromFile === true ||
+      ((existingReqs?.tzVolumes as unknown[] | undefined)?.length ?? 0) > 0 ||
+      ((existingReqs?.productSpecs as unknown[] | undefined)?.length ?? 0) > 0;
+
+    const requirementsForUpdate =
+      incomingIsBareImport && existingIsEnriched && existingReqs
+        ? existingReqs
+        : (t.requirements as Record<string, unknown>);
+
+    const reqRow = tenderRowFromRequirements(requirementsForUpdate);
     const record = await prisma.tender.upsert({
       where: { externalId: t.externalId },
       update: {
-        title: t.title,
+        title: incomingIsBareImport && existingIsEnriched ? existing!.title : t.title,
         description: t.description,
         customerName: t.customerName,
         region: t.region,

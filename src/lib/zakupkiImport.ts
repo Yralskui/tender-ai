@@ -14,6 +14,7 @@ import { parseNationalRegimeFromNoticeHtml, type StoredNationalRegime } from "@/
 import { parseEisKtruCatalogHtml, eisCatalogToDocumentParse } from "@/lib/eisKtruCatalogParser";
 import { applyResolvedTzNames } from "@/lib/tzProductLabelResolve";
 import { zakupkiFetch } from "@/lib/zakupkiQueue";
+import type { TzVolume } from "@/lib/tzVolumes";
 
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
@@ -50,14 +51,10 @@ export interface ZakupkiNoticeDetails {
   tzDocuments?: ParsedTzDocument[];
   tzParsedFromFile?: boolean;
   tzProducts?: string[];
-  tzVolumes?: Array<{
-    name: string;
-    ktruCode?: string;
-    quantity: number;
-    unit: string;
-    position?: string;
-  }>;
+  tzVolumes?: TzVolume[];
   nationalRegime?: StoredNationalRegime | null;
+  /** «Место поставки товара…» из извещения — один адрес на позицию (в порядке позиций) */
+  deliveryPlaces?: string[];
 }
 
 export interface ImportedTender {
@@ -120,6 +117,22 @@ function mergeSearchQueries(
 
 function stripHtml(html: string): string {
   return stripEisMarkup(html);
+}
+
+/**
+ * «Место поставки товара, выполнения работы или оказания услуги» — блок «Условия
+ * контракта» в извещении. ЕИС перечисляет один адрес на строку (через <br/>), в том
+ * же порядке, что и позиции ТЗ/НМЦК — это даёт возможность сопоставить адрес с объёмом.
+ */
+function extractDeliveryPlaces(html: string): string[] {
+  const rich =
+    /section__title">\s*Место поставки товара, выполнения работы или оказания услуги\s*<\/span>\s*<span class="section__info">([\s\S]*?)<\/span>/i;
+  const m = html.match(rich);
+  if (!m) return [];
+  return m[1]
+    .split(/<br\s*\/?>/i)
+    .map((chunk) => stripEisMarkup(chunk))
+    .filter(Boolean);
 }
 
 function extractSectionInfo(html: string, sectionTitle: string): string {
@@ -351,6 +364,7 @@ export function parseNoticeCommonInfoHtml(html: string): ZakupkiNoticeDetails {
   const ktruCodes = [...new Set([...html.matchAll(/\b(\d{2}\.\d{2}\.\d{2}\.\d{3}-\d{8,})\b/g)].map((m) => m[1]))];
 
   const nationalRegime = parseNationalRegimeFromNoticeHtml(html);
+  const deliveryPlaces = extractDeliveryPlaces(html);
 
   return {
     procedureType,
@@ -368,6 +382,7 @@ export function parseNoticeCommonInfoHtml(html: string): ZakupkiNoticeDetails {
     isMedical,
     tzProducts,
     nationalRegime,
+    deliveryPlaces,
   };
 }
 
@@ -593,6 +608,7 @@ export function toImportedTenderFromSearch(
       tzProducts: [],
       tzDocuments: [],
       importMode: "search_only",
+      deliveryPlaces: [],
     },
   };
 }
@@ -669,6 +685,7 @@ export function toImportedTender(
         cachedPath: d.cachedPath,
       })),
       nationalRegime: details.nationalRegime || null,
+      deliveryPlaces: details.deliveryPlaces || [],
     },
   };
 }

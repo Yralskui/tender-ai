@@ -3,9 +3,18 @@ import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { isValidInn, normalizeInn } from "@/lib/authCookie";
 import { createAndSendVerificationEmail } from "@/lib/emailVerification";
+import { checkRateLimit, clientIp } from "@/lib/rateLimit";
 
 export async function POST(req: NextRequest) {
   try {
+    const rl = checkRateLimit(`register:${clientIp(req)}`, 5, 15 * 60_000);
+    if (!rl.allowed) {
+      return NextResponse.json(
+        { error: "Слишком много попыток регистрации. Попробуйте позже." },
+        { status: 429 }
+      );
+    }
+
     const { name, email: rawEmail, password, companyName, inn: rawInn } = await req.json();
     const email = typeof rawEmail === "string" ? rawEmail.trim().toLowerCase() : "";
     const inn = normalizeInn(rawInn);

@@ -23,8 +23,10 @@ export type FeedCacheJob =
 
 const QUEUE_NAME = "feed-cache";
 
+type DistributiveOmit<T, K extends keyof any> = T extends any ? Omit<T, K> : never;
+
 export async function enqueueFeedCacheJob(
-  job: Omit<FeedCacheJob, "enqueuedAt">
+  job: DistributiveOmit<FeedCacheJob, "enqueuedAt">
 ): Promise<void> {
   // Схлопываем подряд идущие partial-rebuild одной компании
   if (job.type === "rebuild" && !job.full && job.tenderIds?.length) {

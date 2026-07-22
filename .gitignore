@@ -34,6 +34,11 @@ yarn-error.log*
 # env — в приватном репо для синхронизации между ноутами
 # (.env закоммичен намеренно; не делайте репозиторий публичным)
 
+# sqlite WAL/backup — временные, не часть данных для синка
+dev.db-shm
+dev.db-wal
+dev.db.backup-*
+
 # vercel
 .vercel
 

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { getCurrentUser } from "@/lib/auth";
 import { normalizeStoredRequirements } from "@/lib/textNormalize";
 import { classifyProcurementDocument } from "@/lib/procurementDocumentGroups";
 import {
@@ -57,6 +58,11 @@ export async function GET(
   _req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const user = await getCurrentUser();
+  if (!user) {
+    return NextResponse.json({ error: "Не авторизован" }, { status: 401 });
+  }
+
   const { id } = await params;
   const urlObj = new URL(_req.url);
   const name = urlObj.searchParams.get("name") || "";

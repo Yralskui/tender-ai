@@ -30,8 +30,13 @@ function findKtruInRow(cells: string[]): string {
   return "";
 }
 
+// «Наименование» само по себе тоже валидный заголовок колонки товара (не только
+// «Наименование товара»/«Наименование(…)») — но «Наименование характеристики/показателя»
+// это заголовок СОВСЕМ другой таблицы (характеристики КТРУ), его исключаем.
+const NAME_HEADER_RE = /наименование(?!\s+(характеристик|показател))/i;
+
 function findNameColumnIndex(headerRow: string[]): number {
-  const idx = headerRow.findIndex((c) => /наименование\s+товара|наименование\s*\(/i.test(c));
+  const idx = headerRow.findIndex((c) => NAME_HEADER_RE.test(c));
   return idx >= 0 ? idx : 1;
 }
 
@@ -44,21 +49,27 @@ function detectNmckColumns(rows: string[][]): {
   let nameCol = 1;
   let unitCol = 2;
   let qtyCol = -1;
+  let qtyColTotal = -1;
   let headerEndRow = 0;
 
   for (let ri = 0; ri < Math.min(rows.length, 8); ri++) {
     const cells = rows[ri].map((c) => String(c ?? "").replace(/\s+/g, " ").trim());
-    if (cells.some((c) => /наименование\s+товара|наименование\s*\(/i.test(c))) {
+    if (cells.some((c) => NAME_HEADER_RE.test(c))) {
       nameCol = findNameColumnIndex(cells);
       headerEndRow = ri;
     }
     for (let i = 0; i < cells.length; i++) {
-      if (/^ед\.?\s*изм/i.test(cells[i])) unitCol = i;
-      if (/^кол-?во$/i.test(cells[i].trim())) qtyCol = i;
+      if (/^(ед\.?\s*изм|единиц)/i.test(cells[i])) unitCol = i;
+      // «Кол-во», «Кол-во общее», «Кол-во 2026» и т.п. — таблицы НМЦК часто разбивают
+      // объём по годам поставки, нужна колонка «общее», а не первая по годам попавшаяся.
+      if (/^(кол-?во\b|количество)/i.test(cells[i])) {
+        if (qtyCol < 0) qtyCol = i;
+        if (/общ|итог/i.test(cells[i])) qtyColTotal = i;
+      }
     }
   }
 
-  return { nameCol, unitCol, qtyCol, headerEndRow };
+  return { nameCol, unitCol, qtyCol: qtyColTotal >= 0 ? qtyColTotal : qtyCol, headerEndRow };
 }
 
 function parseQtyFromRow(cells: string[], qtyCol: number, unitCol: number): string {
@@ -117,7 +128,7 @@ export function parseNmckExcelProducts(buffer: Buffer): NmckLineItem[] {
 
       for (let ri = headerEndRow + 1; ri < stringRows.length; ri++) {
         const cells = stringRows[ri];
-        if (!headerFound && cells.some((c) => /наименование\s+товара|наименование\s*\(/i.test(c))) {
+        if (!headerFound && cells.some((c) => NAME_HEADER_RE.test(c))) {
           headerFound = true;
           continue;
         }

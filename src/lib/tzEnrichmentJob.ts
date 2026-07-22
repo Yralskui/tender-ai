@@ -56,7 +56,7 @@ export function isRussianTlsCertError(error: unknown): boolean {
   if (error instanceof Error) {
     parts.push(error.message);
     const cause = (error as Error & { cause?: unknown }).cause;
-    if (cause instanceof Error) parts.push(cause.message, cause.code || "");
+    if (cause instanceof Error) parts.push(cause.message, (cause as Error & { code?: string }).code || "");
     else if (cause != null) parts.push(String(cause));
     const code = (error as Error & { code?: string }).code;
     if (code) parts.push(code);
@@ -163,22 +163,15 @@ export async function enrichTenderById(
   try {
     const noticeType = (reqs.noticeType as string) || "ea20";
 
-    let details = await fetchNoticeDetails(tender.externalId, noticeType, {
-      parseTzFiles: false,
+    // Файл ТЗ всегда скачивается и разбирается — карточка ЕИС одна может не содержать
+    // важные числовые характеристики (толщина/размеры и т.п.), которые есть только в файле.
+    // В batchLight-режиме объём ограничен (maxDocuments/maxAllDocuments), чтобы не перегружать очередь.
+    const details = await fetchNoticeDetails(tender.externalId, noticeType, {
+      parseTzFiles: true,
+      tzEnrich: options.batchLight
+        ? { batchLight: true, maxDocuments: 2, maxAllDocuments: 2 }
+        : undefined,
     });
-
-    const htmlSpecCount = details.productSpecs?.length ?? 0;
-    const htmlProductCount = details.tzProducts?.length ?? 0;
-    const htmlEnough = htmlSpecCount >= 2 || htmlProductCount >= 1;
-
-    if (!htmlEnough || !options.batchLight) {
-      details = await fetchNoticeDetails(tender.externalId, noticeType, {
-        parseTzFiles: true,
-        tzEnrich: options.batchLight
-          ? { batchLight: true, maxDocuments: 2, maxAllDocuments: 2 }
-          : undefined,
-      });
-    }
 
     const entry = {
       regNumber: tender.externalId,
@@ -235,6 +228,13 @@ export async function enrichTenderById(
       where: { id: tender.id },
       data: {
         title: imported.title,
+        description: imported.description,
+        customerName: imported.customerName,
+        region: imported.region,
+        price: imported.price,
+        publishedAt: imported.publishedAt,
+        deadline: imported.deadline,
+        sourceUrl: imported.sourceUrl,
         ...tenderRowFromRequirements(requirements),
       },
     });

@@ -77,12 +77,51 @@ function wantsSterileProduct(tenderName: string): boolean {
   return false;
 }
 
-function scorePriceMatch(tenderName: string, price: SupplierPriceRow): number {
+/** Найти по ТЗ минимальную допустимую толщину (мкм) — общую или по номеру позиции */
+function deriveThicknessRequirements(productSpecs: string[]): Map<string, number> {
+  const map = new Map<string, number>();
+  let currentPos = "_global";
+
+  for (const raw of productSpecs) {
+    const spec = raw.trim();
+    const posMatch = spec.match(/^Позиция\s+ТЗ\s*№:\s*(\d+)/i);
+    if (posMatch) {
+      currentPos = posMatch[1];
+      continue;
+    }
+    const thickMatch = spec.match(/Толщина[^:]{0,60}мкм[^:]*:\s*>=?\s*(\d{1,3})/i);
+    if (thickMatch) {
+      const val = parseInt(thickMatch[1], 10);
+      if (val > 0) {
+        const existing = map.get(currentPos);
+        if (existing == null || val > existing) map.set(currentPos, val);
+      }
+    }
+  }
+  return map;
+}
+
+function resolveMinThicknessForVolume(
+  vol: TenderVolume,
+  thicknessMap: Map<string, number>
+): number | undefined {
+  if (vol.position && thicknessMap.has(vol.position)) return thicknessMap.get(vol.position);
+  if (thicknessMap.size === 1) return [...thicknessMap.values()][0];
+  return undefined;
+}
+
+function scorePriceMatch(tenderName: string, price: SupplierPriceRow, minThicknessUm?: number): number {
   const priceText = `${price.displayName} ${price.name}`;
   const tenderTypes = detectTextileSubTypes(tenderName);
   const priceTypes = detectTextileSubTypes(priceText);
 
   if (!textileSubTypesCompatible(tenderTypes, priceTypes)) {
+    return 0;
+  }
+
+  // ТЗ требует минимальную толщину — позиции тоньше требования не проходят,
+  // даже если по названию и токенам они лучше всего совпали (нельзя предложить более тонкую позицию).
+  if (minThicknessUm != null && price.thicknessUm != null && price.thicknessUm < minThicknessUm) {
     return 0;
   }
 
@@ -143,10 +182,14 @@ function pickUnitPrice(price: SupplierPriceRow, tenderName: string): number {
   return price.unitPrice;
 }
 
-function findBestPrice(tenderName: string, prices: SupplierPriceRow[]): { price: SupplierPriceRow; score: number } | null {
+function findBestPrice(
+  tenderName: string,
+  prices: SupplierPriceRow[],
+  minThicknessUm?: number
+): { price: SupplierPriceRow; score: number } | null {
   let best: { price: SupplierPriceRow; score: number } | null = null;
   for (const price of prices) {
-    const score = scorePriceMatch(tenderName, price);
+    const score = scorePriceMatch(tenderName, price, minThicknessUm);
     if (score < 0.45) continue;
     if (!best || score > best.score) best = { price, score };
   }
@@ -220,12 +263,14 @@ export function buildTenderEconomics(
   tenderTitle: string,
   nmck: number,
   prices: SupplierPriceRow[],
-  pricelists: SupplierPricelistInfo[] = []
+  pricelists: SupplierPricelistInfo[] = [],
+  productSpecs: string[] = []
 ): TenderEconomicsResult {
   const lines: TenderEconomicsLine[] = [];
   const catalogPricelists = derivePricelists(prices, pricelists);
   const pricesByDoc = groupPricesByDocument(prices);
   const multiPricelist = catalogPricelists.length >= 2;
+  const thicknessMap = deriveThicknessRequirements(productSpecs);
 
   const items =
     volumes.length > 0
@@ -236,10 +281,11 @@ export function buildTenderEconomics(
     const name = (vol.name || tenderTitle).trim();
     const qty = vol.quantity > 0 ? vol.quantity : 1;
     const unit = vol.unit || "шт";
+    const minThicknessUm = resolveMinThicknessForVolume(vol, thicknessMap);
 
     const pricelistMatches: TenderEconomicsPricelistMatch[] = catalogPricelists.map((pl) => {
       const docPrices = pricesByDoc.get(pl.documentId) ?? [];
-      const match = docPrices.length > 0 ? findBestPrice(name, docPrices) : null;
+      const match = docPrices.length > 0 ? findBestPrice(name, docPrices, minThicknessUm) : null;
       const unitPrice = match ? pickUnitPrice(match.price, name) : null;
       const lineCost = unitPrice != null ? Math.round(unitPrice * qty * 100) / 100 : null;
 

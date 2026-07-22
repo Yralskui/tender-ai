@@ -17,7 +17,7 @@ async function main() {
   const text = extractTextFromXlsxBuffer(buffer);
   console.log("text length:", text?.length);
   console.log("text sample:\n", text?.slice(0, 2500));
-  const parsed = parseDocumentAttachment(buffer, "Описание объекта закупки.xlsx");
+  const parsed = await parseDocumentAttachment(buffer, "Описание объекта закупки.xlsx");
   console.log("\nparsed quality:", parsed?.quality, "specs:", parsed?.productSpecs.length);
   console.log("products:", parsed?.products);
   for (const s of parsed?.productSpecs || []) console.log(" ", s);

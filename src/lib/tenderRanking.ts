@@ -444,10 +444,16 @@ export function rankTenderForFeed(
   let showInFeed = !rel.excluded;
   let hideReason: string | undefined;
 
-  if (rel.excluded) {
+  // Текстовая/keyword-эвристика профиля (rel.excluded) — грубее, чем прямое совпадение
+  // конкретной позиции ТЗ с вашим РУ. Если РУ реально нашло совпадение по каталогу,
+  // это сильнее и не должно перекрываться общей эвристикой профиля.
+  const verifiedByRu = hasCatalog && ru.ruMatched > 0;
+
+  if (rel.excluded && !verifiedByRu) {
     showInFeed = false;
     hideReason = rel.reason;
   } else if (hasCatalog) {
+    showInFeed = true;
     const hasRuHit = ru.ruMatched + ru.ruPartial > 0;
     if (familyBlocked) {
       showInFeed = false;

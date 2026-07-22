@@ -15,6 +15,7 @@ import {
 import { saveDocumentAnalysis } from "@/lib/documentAnalysisJob";
 import { ingestPricelistDocument } from "@/lib/supplierPriceSync";
 import { scheduleCompanyFeedCacheRebuild } from "@/lib/tenderFeedCache";
+import { getAccessStatus } from "@/lib/subscription";
 import { writeFile, mkdir } from "fs/promises";
 import path from "path";
 
@@ -41,6 +42,10 @@ export async function POST(req: NextRequest) {
 
     if (!user?.company) {
       return NextResponse.json({ error: "Компания не найдена" }, { status: 400 });
+    }
+
+    if (!getAccessStatus(user).hasAccess) {
+      return NextResponse.json({ error: "Требуется подписка" }, { status: 403 });
     }
 
     let formData: FormData;
@@ -77,7 +82,7 @@ export async function POST(req: NextRequest) {
     if (!ALLOWED_EXT.includes(ext)) {
       return NextResponse.json({ error: "Формат не поддерживается. Используйте PDF, JPG или PNG" }, { status: 400 });
     }
-    if (!ALLOWED_MIME.includes(file.type) && !ALLOWED_EXT.includes(ext)) {
+    if (file.type && !ALLOWED_MIME.includes(file.type)) {
       return NextResponse.json({ error: "Формат не поддерживается. Используйте PDF, JPG или PNG" }, { status: 400 });
     }
 

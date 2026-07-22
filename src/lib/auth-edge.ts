@@ -1,8 +1,10 @@
 import { SignJWT, jwtVerify } from "jose";
 
-const secret = new TextEncoder().encode(
-  process.env.JWT_SECRET || "tender-ai-super-secret-jwt-key-2026-change-in-production"
-);
+if (!process.env.JWT_SECRET) {
+  throw new Error("JWT_SECRET не задан — сессии нельзя подписывать без него");
+}
+
+const secret = new TextEncoder().encode(process.env.JWT_SECRET);
 
 export async function signToken(payload: { userId: string; email: string }) {
   return await new SignJWT(payload)

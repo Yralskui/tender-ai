@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { signToken } from "@/lib/auth";
 import { authCookieOptions } from "@/lib/authCookie";
 import { cookies } from "next/headers";
+import { checkRateLimit, clientIp } from "@/lib/rateLimit";
 
 export async function POST(req: NextRequest) {
   try {
@@ -12,6 +13,14 @@ export async function POST(req: NextRequest) {
 
     if (!email || !password) {
       return NextResponse.json({ error: "Введите email и пароль" }, { status: 400 });
+    }
+
+    const rl = checkRateLimit(`login:${clientIp(req)}:${email}`, 10, 5 * 60_000);
+    if (!rl.allowed) {
+      return NextResponse.json(
+        { error: "Слишком много попыток входа. Попробуйте позже." },
+        { status: 429 }
+      );
     }
 
     const user = await prisma.user.findUnique({ where: { email } });

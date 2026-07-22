@@ -6,10 +6,28 @@ import AdmZip from "adm-zip";
 import { extractTextFromXlsxBuffer, isXlsxBuffer } from "@/lib/excelText";
 
 const ZIP_MAGIC = [0x50, 0x4b, 0x03, 0x04];
+// OLE2/CFBF — контейнер старого бинарного формата .doc (Word 97-2003).
+const OLE_MAGIC = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
 
 function isZipArchive(buffer: Buffer): boolean {
   if (buffer.length < 4) return false;
   return ZIP_MAGIC.every((b, i) => buffer[i] === b);
+}
+
+function isOleCompoundFile(buffer: Buffer): boolean {
+  if (buffer.length < 8) return false;
+  return OLE_MAGIC.every((b, i) => buffer[i] === b);
+}
+
+/**
+ * .xls (старый бинарный Excel) использует тот же OLE2/CFBF-контейнер, что и .doc —
+ * магические байты их не различают. Различаем по имени внутреннего потока: у Word
+ * это «WordDocument», у Excel — «Workbook»/«Book». Без этой проверки .xls ошибочно
+ * попадал бы в word-extractor и падал с ошибкой чтения буфера.
+ */
+function isOleWordDocument(buffer: Buffer): boolean {
+  if (!isOleCompoundFile(buffer)) return false;
+  return buffer.includes(Buffer.from("WordDocument", "utf16le"));
 }
 
 function zipSubtype(buffer: Buffer): "docx" | "xlsx" | "unknown" {
@@ -57,11 +75,30 @@ export function extractTextFromDocxBuffer(buffer: Buffer): string | null {
   }
 }
 
-export function detectOfficeFormat(buffer: Buffer): "docx" | "xlsx" | "pdf" | "unknown" {
+export function detectOfficeFormat(buffer: Buffer): "docx" | "xlsx" | "doc" | "pdf" | "unknown" {
   if (buffer.length >= 5 && buffer.slice(0, 5).toString() === "%PDF-") return "pdf";
   if (isXlsxBuffer(buffer)) return "xlsx";
   if (zipSubtype(buffer) === "docx") return "docx";
+  if (isOleWordDocument(buffer)) return "doc";
   return "unknown";
+}
+
+/**
+ * Текст из бинарного .doc (Word 97-2003, формат OLE2/CFBF) через word-extractor —
+ * в отличие от .docx это не XML-архив, а бинарный поток, нужен отдельный разбор.
+ */
+export async function extractTextFromDocBuffer(buffer: Buffer): Promise<string | null> {
+  if (!isOleWordDocument(buffer)) return null;
+  try {
+    const WordExtractor = (await import("word-extractor")).default;
+    const extractor = new WordExtractor();
+    const doc = await extractor.extract(buffer);
+    const text = doc.getBody();
+    return text && text.trim().length > 30 ? text : null;
+  } catch (e) {
+    console.error("extractTextFromDocBuffer:", e);
+    return null;
+  }
 }
 
 export interface UnwrappedOfficeFile {
@@ -120,6 +157,9 @@ export async function extractTextFromOfficeBuffer(buffer: Buffer): Promise<{ tex
   }
   if (format === "docx") {
     return { format: "docx", text: extractTextFromDocxBuffer(buffer) };
+  }
+  if (format === "doc") {
+    return { format: "doc", text: await extractTextFromDocBuffer(buffer) };
   }
   return { format: "unknown", text: null };
 }

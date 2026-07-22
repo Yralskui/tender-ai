@@ -4,6 +4,7 @@ import { enrichTenderById } from "@/lib/tzEnrichmentJob";
 import { prisma } from "@/lib/prisma";
 import { normalizeStoredRequirements } from "@/lib/textNormalize";
 import { summarizeTzDisplayCounts } from "@/lib/tenderPresentation";
+import { getAccessStatus } from "@/lib/subscription";
 
 export const maxDuration = 120;
 
@@ -13,6 +14,9 @@ export async function POST(
 ) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!getAccessStatus(user).hasAccess) {
+    return NextResponse.json({ error: "paywall" }, { status: 403 });
+  }
 
   const { id } = await params;
   const result = await enrichTenderById(id);

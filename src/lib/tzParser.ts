@@ -5,6 +5,7 @@ import { sanitizeTzParseResult } from "@/lib/tzSanitizer";
 import { isCharacteristicFieldName, looksLikeProductName, isGenericProcurementTitle } from "@/lib/tzSanitizer";
 import { normalizeTzSpecText } from "@/lib/textNormalize";
 import type { KtruProductBlock } from "@/lib/docxTableParser";
+import type { TzVolume } from "@/lib/tzVolumes";
 
 export interface TzParseResult {
   products: string[];
@@ -12,13 +13,7 @@ export interface TzParseResult {
   technicalAssignment: string;
   ktruCodes: string[];
   hasRuRequirement: boolean;
-  tzVolumes?: Array<{
-    name: string;
-    ktruCode?: string;
-    quantity: number;
-    unit: string;
-    position?: string;
-  }>;
+  tzVolumes?: TzVolume[];
   productBlocks?: KtruProductBlock[];
 }
 

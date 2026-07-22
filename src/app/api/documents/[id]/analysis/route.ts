@@ -9,8 +9,18 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
 
     const { id } = await params;
 
+    const user = await prisma.user.findUnique({
+      where: { id: session.userId },
+      include: { company: true },
+    });
+    if (!user?.company) {
+      return NextResponse.json({ error: "Компания не найдена" }, { status: 400 });
+    }
+
     const doc = await prisma.document.findUnique({ where: { id } });
-    if (!doc) return NextResponse.json({ error: "Не найден" }, { status: 404 });
+    if (!doc || doc.companyId !== user.company.id) {
+      return NextResponse.json({ error: "Не найден" }, { status: 404 });
+    }
 
     let extracted: Record<string, unknown> = {};
     try { extracted = JSON.parse(doc.extractedData || "{}"); } catch {}

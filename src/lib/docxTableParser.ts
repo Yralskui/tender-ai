@@ -83,6 +83,7 @@ function cleanSimpleProductName(raw: string): { name: string; code: string } {
     .replace(KTRU_CODE_RE, "")
     .replace(/\b\d{2}\.\d{2}\.\d{2}\.\d{3}\b/g, "")
     .replace(/,\s*-\d{5,}/g, "")
+    .replace(/КТРУ:\s*$/i, "")
     .replace(/\s+/g, " ")
     .replace(/,\s*$/, "")
     .trim();
@@ -92,8 +93,10 @@ function cleanSimpleProductName(raw: string): { name: string; code: string } {
 
 function findSimpleTableColumns(headerCells: string[]): { nameIdx: number; charIdx: number } | null {
   const lower = headerCells.map((c) => c.toLowerCase());
-  const nameIdx = lower.findIndex((c) => /наименование/.test(c) && !/характеристик/.test(c));
-  const charIdx = lower.findIndex((c) => /характеристик/.test(c));
+  // «Наименование, характеристика товара» — всё ещё колонка наименования, а не колонка
+  // «Наименование характеристики/показателя» (заголовок отдельной колонки характеристик).
+  const nameIdx = lower.findIndex((c) => /наименование/.test(c) && !/наименование\s+(характеристик|показател)/.test(c));
+  const charIdx = lower.findIndex((c, idx) => idx !== nameIdx && /характеристик/.test(c));
   if (nameIdx < 0 || charIdx < 0) return null;
   return { nameIdx, charIdx };
 }
@@ -201,7 +204,8 @@ export function parseSimpleOozTable(buffer: Buffer): DocxKtruParseResult | null 
       const characteristics = splitCharacteristicsBlob(charBlob);
       if (characteristics.length === 0) continue;
 
-      blocks.push({ position, name, code, characteristics });
+      const vol = parseUnitQtyFromCells(cells);
+      blocks.push({ position, name, code, quantity: vol?.quantity, unit: vol?.unit, characteristics });
     }
   }
 
@@ -641,8 +645,10 @@ function isCharacteristicRow(cells: string[]): { name: string; value: string } |
   // ЕИС-таблица КТРУ часто имеет 3 пустых колонки (№/КТРУ/Наименование),
   // а характеристики лежат в колонках 4..6.
   const hasOffsetFields = !cells[0] && !cells[1] && !cells[2] && Boolean(cells[3]);
+  // Значение характеристики лежит в cells[4] («Значения характеристики»), cells[5] — это
+  // единица измерения характеристики (напр. «Сантиметр»), а не запасное место для значения.
   const nameRaw = hasOffsetFields ? cells[3] : cells[0];
-  const valueRaw = hasOffsetFields ? (cells[5] || cells[4] || cells.slice(4).join(" ")) : (cells[1] || cells.slice(1).join(" "));
+  const valueRaw = hasOffsetFields ? (cells[4] || cells[5] || cells.slice(4).join(" ")) : (cells[1] || cells.slice(1).join(" "));
 
   const name = (nameRaw || "").trim();
   if (!name || /^\d{1,3}$/.test(name)) return null;
@@ -682,10 +688,15 @@ export function parseDocxKtruTables(buffer: Buffer): DocxKtruParseResult | null 
     const product = isProductRow(cells);
     if (product) {
       if (current) blocks.push(current);
+      // Кол-во/Ед.измер. товара часто лежат в хвостовых колонках строки товара
+      // (после колонок характеристики), напр. …| Штука | 17 000.
+      const vol = parseUnitQtyFromCells(cells);
       current = {
         position: product.position,
         name: product.name,
         code: product.code,
+        quantity: vol?.quantity,
+        unit: vol?.unit,
         characteristics: [],
       };
 
@@ -695,6 +706,14 @@ export function parseDocxKtruTables(buffer: Buffer): DocxKtruParseResult | null 
         current.characteristics.push(inlineChar);
       }
       continue;
+    }
+
+    if (current && !current.quantity) {
+      const vol = parseUnitQtyFromCells(cells);
+      if (vol) {
+        current.quantity = vol.quantity;
+        current.unit = vol.unit;
+      }
     }
 
     const ch = isCharacteristicRow(cells);
@@ -733,18 +752,23 @@ function cleanArticle33ProductName(raw: string): string {
     .trim();
 }
 
+/** «10 000» — количество с пробелом-разделителем разрядов, не просто цифры подряд */
+function isPlainQtyToken(text: string): boolean {
+  return /^\d{1,3}([\s ]?\d{3})*$/.test(text.trim());
+}
+
 function article33UnitQty(cells: string[]): { hasUnit: boolean; hasQty: boolean; quantity: number } {
   const c3 = (cells[3] || "").trim();
   const c4 = (cells[4] || "").trim();
   const c5 = (cells[5] || "").trim();
   let hasUnit = /^(шт|штук)/i.test(c3);
-  let hasQty = /^\d+$/.test(c4);
-  let quantity = hasQty ? parseInt(c4, 10) : 0;
+  let hasQty = isPlainQtyToken(c4);
+  let quantity = hasQty ? parseInt(c4.replace(/[\s ]/g, ""), 10) : 0;
   // ЕИС: [3]=«Характеристики товаров согласно КТРУ», [4]=Штука, [5]=Ограничение
   if (!hasUnit && /характеристик/i.test(c3) && /^(шт|штук)/i.test(c4)) {
     hasUnit = true;
-    hasQty = /^\d+$/.test(c5);
-    quantity = hasQty ? parseInt(c5, 10) : 0;
+    hasQty = isPlainQtyToken(c5);
+    quantity = hasQty ? parseInt(c5.replace(/[\s ]/g, ""), 10) : 0;
   }
   return { hasUnit, hasQty, quantity };
 }
@@ -768,7 +792,7 @@ function isArticle33ProductRow(cells: string[]): {
   const { hasUnit, hasQty, quantity: qtyFromCells } = article33UnitQty(cells);
   const qtyCell = (cells[4] || "").trim();
   const hasUnitLegacy = /^(шт|штук)/i.test((cells[3] || "").trim());
-  const hasQtyLegacy = /^\d+$/.test(qtyCell);
+  const hasQtyLegacy = isPlainQtyToken(qtyCell);
 
   if (
     nameCell.length >= 8 &&
@@ -776,7 +800,7 @@ function isArticle33ProductRow(cells: string[]): {
     !isMaterialCompositionText(nameCell) &&
     (hasUnit || hasQty || hasUnitLegacy || hasQtyLegacy)
   ) {
-    const quantity = qtyFromCells || (hasQtyLegacy ? parseInt(qtyCell, 10) : 0);
+    const quantity = qtyFromCells || (hasQtyLegacy ? parseInt(qtyCell.replace(/[\s ]/g, ""), 10) : 0);
     const unit = hasUnit || hasUnitLegacy ? "шт" : "шт";
     const charName = (cells[5] || "").trim();
     const charVal = (cells[6] || "").trim();

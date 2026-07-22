@@ -254,9 +254,12 @@ export function isTechnicalSpec(spec: string): boolean {
   const lower = spec.toLowerCase();
   if (ORTHO_TZ_MARKERS.test(lower)) return true;
   if (/длина\s+пластин|материал:\s*титан/i.test(lower)) return true;
-  if (TEXTILE_TZ_MARKERS.test(lower)) return false;
+  // Электроника/имплант-кардио проверяются раньше текстиля: слова вроде «диаметр», «мм»
+  // общие для обоих доменов, а «электрод», «частот», «имплант» — однозначный сигнал электроники,
+  // который не должен теряться из-за более широкого текстильного маркера.
   if (ELECTRONIC_TZ_MARKERS.test(lower)) return true;
   if (/\d+[\s,.]*(гц|hz|миллиампер|вольт|вт\b)/i.test(spec)) return true;
+  if (TEXTILE_TZ_MARKERS.test(lower)) return false;
   return false;
 }
 
@@ -318,7 +321,24 @@ export function familiesAreCompatible(
   const tenderKnown = [...tenderFamilies].filter((f) => f !== "unknown");
   const catalogKnown = [...catalogFamilies].filter((f) => f !== "unknown");
 
-  if (tenderKnown.length === 0 || catalogKnown.length === 0) return true;
+  if (tenderKnown.length === 0 || catalogKnown.length === 0) {
+    // Одна сторона вообще не распознана (не попала ни в одно семейство) — раньше это
+    // всегда считалось «совместимо», то есть проверка молча отключалась для любой
+    // нераспознанной номенклатуры. Для категорий с высокой ценой ошибки (имплант/кардио,
+    // фарма, травматология, лаб-диагностика) неизвестная сторона не должна автоматически
+    // проходить как совместимая — иначе непонятная строка каталога может "подтвердить"
+    // соответствие тендеру на кардиостимуляторы или лекарства.
+    const HIGH_RISK_FAMILIES: ProductFamily[] = [
+      "medical_implant_cardiac",
+      "pharmaceutical",
+      "medical_trauma_ortho",
+      "medical_lab_ivd",
+    ];
+    const isHighRisk = (known: ProductFamily[]) => known.some((f) => HIGH_RISK_FAMILIES.includes(f));
+    if (tenderKnown.length === 0 && isHighRisk(catalogKnown)) return false;
+    if (catalogKnown.length === 0 && isHighRisk(tenderKnown)) return false;
+    return true;
+  }
 
   const tenderCardiac =
     tenderFamilies.has("medical_implant_cardiac") || tenderFamilies.has("medical_electronic");

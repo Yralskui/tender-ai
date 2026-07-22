@@ -282,8 +282,8 @@ export default function Home() {
           </div>
           <p className="text-slate-500 text-sm">© 2026 TenderAI. Все права защищены.</p>
           <div className="flex gap-6 text-sm text-slate-500">
-            <a href="#" className="hover:text-slate-900 transition-colors">Политика конфиденциальности</a>
-            <a href="#" className="hover:text-slate-900 transition-colors">Условия использования</a>
+            <Link href="/privacy" className="hover:text-slate-900 transition-colors">Политика конфиденциальности</Link>
+            <Link href="/terms" className="hover:text-slate-900 transition-colors">Условия использования</Link>
           </div>
         </div>
       </footer>

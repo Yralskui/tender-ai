@@ -190,7 +190,7 @@ export default async function TendersPage({
   return (
     <div className="flex min-h-screen app-shell">
       <Sidebar />
-      <main className="app-main p-3 sm:p-4 lg:p-5">
+      <main className="app-main p-3 sm:p-4 lg:p-5 allow-text-select">
         <BackgroundTzEnrichment />
         <FeedCachePoller active={Boolean(feedPage.cacheBuilding)} feedMode={feedMode} />
         <TenderFeedScrollRestore returnHref={returnHref} />
