@@ -1,16 +1,16 @@
 {
   "running": false,
   "intervalMs": 1200000,
-  "lastStartedAt": "2026-06-24T05:31:02.500Z",
-  "lastFinishedAt": "2026-06-24T05:31:53.082Z",
-  "lastMessage": "удалено 1 просроченных · очищено 1 кэш-папок ТЗ · +20 новых, 780 обновлено · в базе 6781",
+  "lastStartedAt": "2026-07-22T07:11:46.711Z",
+  "lastFinishedAt": "2026-07-22T07:23:53.241Z",
+  "lastMessage": "+263 новых, 537 обновлено · в базе 2165",
   "maintenance": {
-    "expiredTendersDeleted": 1,
-    "cacheDirsRemoved": 1
+    "expiredTendersDeleted": 0,
+    "cacheDirsRemoved": 0
   },
   "sync": {
-    "created": 20,
-    "updated": 780,
-    "total": 6781
+    "created": 263,
+    "updated": 537,
+    "total": 2165
   }
 }
