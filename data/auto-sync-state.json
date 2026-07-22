@@ -1,16 +1,16 @@
 {
   "running": false,
   "intervalMs": 1200000,
-  "lastStartedAt": "2026-07-22T07:11:46.711Z",
-  "lastFinishedAt": "2026-07-22T07:23:53.241Z",
-  "lastMessage": "+263 новых, 537 обновлено · в базе 2165",
+  "lastStartedAt": "2026-07-22T08:17:17.218Z",
+  "lastFinishedAt": "2026-07-22T08:26:59.216Z",
+  "lastMessage": "+18 новых, 782 обновлено · в базе 2264",
   "maintenance": {
     "expiredTendersDeleted": 0,
     "cacheDirsRemoved": 0
   },
   "sync": {
-    "created": 263,
-    "updated": 537,
-    "total": 2165
+    "created": 18,
+    "updated": 782,
+    "total": 2264
   }
 }
