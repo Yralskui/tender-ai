@@ -10,6 +10,9 @@ FROM base AS builder
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npx prisma generate
+# JWT_SECRET нужен только чтобы модуль auth-edge.ts не падал при сборе данных
+# страниц во время build — реальный секрет приходит в рантайме через env_file
+ENV JWT_SECRET=build-time-placeholder-not-used-at-runtime
 RUN npm run build
 
 FROM base AS runner
@@ -20,6 +23,7 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/prisma ./prisma
+COPY --from=builder /app/prisma.config.ts ./
 COPY --from=builder /app/certs ./certs
 COPY --from=builder /app/src ./src
 COPY --from=builder /app/scripts ./scripts

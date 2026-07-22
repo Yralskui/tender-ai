@@ -1,62 +1,17 @@
-# Production stack: Postgres + Redis + worker + web.
+# Production stack: web (SQLite, фоновые задачи в том же процессе).
 #
 #   docker compose up -d
 #
-# Web: BACKGROUND_JOBS_IN_NEXT=0 — фон только в worker.
+# dev.db и data/ примонтированы с хоста — переживают пересборку образа.
 
 services:
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: tender
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?укажите POSTGRES_PASSWORD в .env}
-      POSTGRES_DB: tenderai
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tender -d tenderai"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  redis:
-    image: redis:7-alpine
-    volumes:
-      - redisdata:/data
-
-  worker:
-    build: .
-    command: npm run worker
-    env_file: .env
-    environment:
-      WORKER_MODE: "1"
-      BACKGROUND_JOBS_IN_NEXT: "0"
-      DATABASE_URL: postgresql://tender:${POSTGRES_PASSWORD}@postgres:5432/tenderai
-      REDIS_URL: redis://redis:6379
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
-    restart: unless-stopped
-
   web:
     build: .
     command: npm run start
     ports:
       - "127.0.0.1:3000:3000"
     env_file: .env
-    environment:
-      BACKGROUND_JOBS_IN_NEXT: "0"
-      DATABASE_URL: postgresql://tender:${POSTGRES_PASSWORD}@postgres:5432/tenderai
-      REDIS_URL: redis://redis:6379
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
+    volumes:
+      - ./dev.db:/app/dev.db
+      - ./data:/app/data
     restart: unless-stopped
-
-volumes:
-  pgdata:
-  redisdata:
