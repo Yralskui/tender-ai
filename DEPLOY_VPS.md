@@ -1,9 +1,14 @@
 # Выкладка TenderAI на свой VPS (AdminVPS, Ubuntu 22.04/24.04)
 
-Стек — `docker-compose.yml` в корне репозитория: Postgres + Redis + worker + web.
-Всё выполняется через SSH под root на сервере.
+Стек — `docker-compose.yml` в корне репозитория: один сервис `web` (SQLite,
+фоновые задачи — авто-синк тендеров, разбор ТЗ — работают в том же процессе,
+см. `instrumentation.ts`). Postgres/Redis в проекте пока не доведены до
+рабочего состояния (миграции в `prisma/migrations` написаны только под
+SQLite) — не переключайте `DATABASE_URL` на `postgres://`, пока это не
+починено отдельно.
 
-Домен ниже везде обозначен как `ВАШ-ДОМЕН.ru` — замените на свой.
+Всё выполняется через SSH под root на сервере. Домен ниже обозначен как
+`ВАШ-ДОМЕН.ru` — замените на свой.
 
 ---
 
@@ -20,7 +25,7 @@
 apt update && apt upgrade -y
 ```
 
-Своп — полезно на тарифах с небольшим RAM, чтобы сборка `next build` внутри Docker не падала по памяти:
+Своп — полезно на тарифах с небольшим RAM, чтобы сборка `next build` внутри Docker не падала по памяти (при ≥4 ГБ RAM можно пропустить):
 
 ```bash
 fallocate -l 2G /swapfile
@@ -46,7 +51,7 @@ ufw allow 443/tcp
 ufw enable
 ```
 
-Порты Postgres (5432) и Redis (6379) наружу не открываем — они видны только внутри Docker-сети между контейнерами.
+Порт 3000 наружу не открываем — сайт слушает `127.0.0.1:3000`, наружу отдаёт только Caddy (шаг 5).
 
 ---
 
@@ -56,8 +61,16 @@ ufw enable
 
 ```bash
 cd /opt
-git clone https://<ВАШ_GITHUB_ЛОГИН>:<ВАШ_ТОКЕН>@github.com/Yralskui/tender-ai.git
+git clone https://<ВАШ_GITHUB_ЛОГИН>:<ВАШ_ТОКЕН>@github.com/Yralskui/tender-ai.git tender-ai
 cd tender-ai
+```
+
+Если хотите унести с собой текущую локальную базу (накопленные тендеры), а не начинать с пустой — скопируйте `dev.db` со своего компьютера поверх (см. раздел 7, «перенос базы»). Иначе база наполнится сама за счёт авто-синка в течение ~20 минут после запуска.
+
+`dev.db` — файл, отслеживаемый в git (репозиторий приватный, синхронизируется между вашими машинами). На сервере после первого деплоя пометьте его как «не трогать при git pull», иначе следующее обновление кода перезапишет боевую базу версией из репозитория:
+
+```bash
+git update-index --skip-worktree dev.db
 ```
 
 ---
@@ -69,7 +82,7 @@ cp .env.example .env
 nano .env
 ```
 
-Сгенерировать случайные секреты (выполните трижды, вставьте разные значения в `.env`):
+Сгенерировать случайные секреты (выполните дважды, вставьте разные значения в `.env`):
 
 ```bash
 openssl rand -hex 32
@@ -81,13 +94,12 @@ openssl rand -hex 32
 |---|---|
 | `JWT_SECRET` | случайная строка выше |
 | `CRON_SECRET` | другая случайная строка |
-| `POSTGRES_PASSWORD` | ещё одна случайная строка (не `tender`!) |
 | `APP_URL` | `https://ВАШ-ДОМЕН.ru` |
 | `NEXT_PUBLIC_APP_URL` | `https://ВАШ-ДОМЕН.ru` |
-| `GROQ_API_KEY` | ваш боевой ключ (свой, не dev-ключ из старого `.env`) |
-| `SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASS`/`SMTP_FROM` | ваша боевая почта |
+| `GROQ_API_KEY` | ваш ключ Groq |
+| `SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASS`/`SMTP_FROM` | ваша почта |
 
-`BACKGROUND_JOBS_IN_NEXT=0` и `DATABASE_URL`/`REDIS_URL` уже прописаны в `docker-compose.yml` — руками не трогать.
+`chmod 600 .env` — файл содержит секреты.
 
 ---
 
@@ -95,27 +107,26 @@ openssl rand -hex 32
 
 ```bash
 docker compose build
-docker compose up -d postgres redis
-docker compose run --rm web npm run db:migrate
 docker compose up -d
+docker compose ps
+docker compose logs --tail=50 web
 ```
 
-Проверить, что всё поднялось:
+В логах должно быть `▲ Next.js …`, `✓ Ready …` и `[auto-sync] планировщик: CD 20 мин…`.
+
+Быстрая проверка изнутри сервера:
 
 ```bash
-docker compose ps
-docker compose logs -f web
+curl -s -o /dev/null -w 'HTTP %{http_code}\n' http://127.0.0.1:3000/
 ```
 
-В логах должно появиться что-то вроде `[auto-sync] планировщик: …`. `Ctrl+C` — выйти из просмотра логов (контейнеры продолжат работать).
-
-Приложение слушает `127.0.0.1:3000` на хосте — наружу пока не открыто, это нормально, следующий шаг добавит HTTPS.
+Должно быть `HTTP 200`. Наружу порт 3000 пока не открыт — это нормально, следующий шаг добавит HTTPS.
 
 ---
 
 ## 5. HTTPS через Caddy (автоматический сертификат)
 
-Caddy сам получает и продлевает сертификат Let's Encrypt — конфиг из двух строк.
+Caddy сам получает и продлевает сертификат Let's Encrypt — конфиг из двух строк. Домен обязательно должен уже указывать на IP сервера (шаг 0), иначе выпуск сертификата не пройдёт.
 
 ```bash
 apt install -y debian-keyring debian-archive-keyring apt-transport-https
@@ -141,7 +152,7 @@ systemctl reload caddy
 ## 6. Проверка после выкладки
 
 - [ ] Регистрация / вход (сессия — `secure`-cookie, работает только по HTTPS, поэтому шаг 5 обязателен)
-- [ ] Лента тендеров подтягивается (подождите ~20 мин или посмотрите `docker compose logs -f worker`)
+- [ ] Лента тендеров подтягивается (подождите ~20 мин или смотрите `docker compose logs -f web`)
 - [ ] Карточка тендера + объём + экономика открываются
 - [ ] Письма (email-верификация) приходят — проверить SMTP в `.env`
 - [ ] `/privacy` и `/terms` открываются
@@ -154,21 +165,45 @@ systemctl reload caddy
 cd /opt/tender-ai
 git pull
 docker compose build
-docker compose run --rm web npm run db:migrate
 docker compose up -d
+```
+
+`dev.db` не тронется благодаря `git update-index --skip-worktree dev.db` из шага 2.
+
+Перенос базы с другого компьютера (например, если накопили тендеры локально и хотите заменить пустую боевую базу):
+
+```bash
+# с локальной машины:
+scp dev.db root@ВАШ_IP:/opt/tender-ai/dev.db
+# на сервере:
+cd /opt/tender-ai && docker compose restart web
 ```
 
 Полезные команды:
 
 ```bash
-docker compose logs -f web        # логи сайта
-docker compose logs -f worker     # логи фоновых задач (авто-синк, разбор ТЗ)
-docker compose restart web worker # перезапуск без пересборки
-docker compose down               # остановить всё (данные в volumes сохранятся)
+docker compose logs -f web   # логи сайта и фоновых задач
+docker compose restart web   # перезапуск без пересборки
+docker compose down          # остановить (dev.db и data/ на хосте — не теряются)
 ```
+
+---
+
+## Отложено на потом: Postgres
+
+`src/lib/prisma.ts` умеет подключаться и к Postgres (через `@prisma/adapter-pg`), но
+`schema.prisma` жёстко объявляет `datasource db { provider = "sqlite" }`, и вся история
+миграций (`prisma/migrations`) написана под SQLite. Сгенерированный Prisma Client
+скомпилирован под диалект SQLite — `prisma db push`/`migrate deploy` против Postgres
+падают с `P1013` (protocol mismatch), а рантайм-адаптер эту проблему не решает.
+
+Чтобы честно включить Postgres, понадобится: сменить `provider` на `postgresql`,
+перегенерировать клиент, создать новую историю миграций и проверить каждую модель на
+реальные различия типов (даты, JSON-строки, булевы значения) — отдельная задача, не
+блокер для текущего деплоя на SQLite.
 
 ---
 
 ## Отличия от `DEPLOY.md` (Fly.io)
 
-Этот файл — актуальный путь деплоя (VPS уже куплен). `DEPLOY.md` описывает альтернативу на Fly.io с SQLite — не используется, но оставлен для справки на случай переезда на Fly в будущем.
+Этот файл — актуальный путь деплоя (VPS уже куплен). `DEPLOY.md` описывает альтернативу на Fly.io — не используется, но оставлен для справки на случай переезда на Fly в будущем.
